@@ -1,0 +1,28 @@
+# Logs
+*.log
+
+# Database
+*.db
+*.db-journal
+
+# Model files (large binary)
+*.pkl
+
+# Data files (large)
+*.csv
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Temp files
+tmp*.pkl
+*.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# OneDrive sync
+*.lnk

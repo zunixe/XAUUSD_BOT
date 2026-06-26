@@ -1,0 +1,20 @@
+# Core
+pandas>=1.5.0
+numpy>=1.24.0
+scikit-learn>=1.2.0
+
+# Model
+xgboost>=1.7.0
+
+# Deep Learning (opsional - untuk LSTM)
+tensorflow>=2.10.0
+
+# Data
+yfinance>=0.2.0
+
+# Visualisasi
+matplotlib>=3.6.0
+seaborn>=0.12.0
+
+# Save model
+joblib>=1.2.0
