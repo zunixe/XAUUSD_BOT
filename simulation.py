@@ -65,69 +65,81 @@ def reset_sim():
 
 # ========== RISK MANAGEMENT (Phase 3) ==========
 
-def check_drawdown_limit():
-    """Check if drawdown exceeds limit. Returns (is_ok, drawdown_pct)."""
+def check_risk_all():
+    """All risk checks in a single DB connection. Returns dict with all results."""
     sim = get_active_sim()
     if not sim:
-        return True, 0
+        return {"dd_ok": True, "dd_pct": 0, "wl_ok": True, "wl_pnl": 0,
+                "consec": 0, "mc_ok": True, "mc_total": 0}
     sim_id, balance, initial = sim
     conn = sqlite3.connect(trading.DB_FILE)
-    peak = conn.execute("SELECT MAX(balance_after) FROM sim_trades WHERE sim_id=?", (sim_id,)).fetchone()[0]
-    conn.close()
-    peak = peak or initial
-    drawdown = (peak - balance) / peak if peak > 0 else 0
-    limit = CFG["risk"]["max_drawdown_pct"]
-    return drawdown < limit, drawdown
+    try:
+        # Drawdown
+        peak = conn.execute("SELECT MAX(balance_after) FROM sim_trades WHERE sim_id=?", (sim_id,)).fetchone()[0]
+        peak = peak or initial
+        drawdown = (peak - balance) / peak if peak > 0 else 0
+        dd_limit = CFG["risk"]["max_drawdown_pct"]
 
+        # Weekly loss
+        week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+        weekly_pnl = conn.execute(
+            "SELECT SUM(pnl) FROM sim_trades WHERE sim_id=? AND created_at >= ?",
+            (sim_id, week_ago)).fetchone()[0] or 0
+        wl_limit = balance * CFG["risk"]["weekly_loss_limit_pct"]
+
+        # Consecutive losses
+        trades = conn.execute(
+            "SELECT outcome FROM sim_trades WHERE sim_id=? ORDER BY id DESC LIMIT 10",
+            (sim_id,)).fetchall()
+        consec = 0
+        for (outcome,) in trades:
+            if outcome == "LOSS":
+                consec += 1
+            else:
+                break
+
+        # Active positions count
+        d_count = conn.execute("SELECT COUNT(*) FROM predictions WHERE outcome IS NULL").fetchone()[0]
+        f_count = conn.execute("SELECT COUNT(*) FROM predictions_4h WHERE outcome IS NULL").fetchone()[0]
+        mc_total = d_count + f_count
+        mc_limit = CFG["risk"]["max_concurrent_positions"]
+
+        return {
+            "dd_ok": drawdown < dd_limit, "dd_pct": drawdown,
+            "wl_ok": weekly_pnl > -wl_limit, "wl_pnl": weekly_pnl,
+            "consec": consec,
+            "mc_ok": mc_total < mc_limit, "mc_total": mc_total,
+        }
+    finally:
+        conn.close()
+
+
+# Keep individual functions for backward compatibility
+def check_drawdown_limit():
+    r = check_risk_all()
+    return r["dd_ok"], r["dd_pct"]
 
 def check_weekly_loss_limit():
-    """Check if weekly loss exceeds limit. Returns (is_ok, weekly_pnl)."""
-    sim = get_active_sim()
-    if not sim:
-        return True, 0
-    conn = sqlite3.connect(trading.DB_FILE)
-    week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
-    weekly_pnl = conn.execute(
-        "SELECT SUM(pnl) FROM sim_trades WHERE sim_id=? AND created_at >= ?",
-        (sim[0], week_ago)).fetchone()[0] or 0
-    conn.close()
-    limit = sim[1] * CFG["risk"]["weekly_loss_limit_pct"]
-    return weekly_pnl > -limit, weekly_pnl
-
+    r = check_risk_all()
+    return r["wl_ok"], r["wl_pnl"]
 
 def get_consecutive_losses():
-    """Count consecutive losses from most recent trades."""
-    sim = get_active_sim()
-    if not sim:
-        return 0
-    conn = sqlite3.connect(trading.DB_FILE)
-    trades = conn.execute(
-        "SELECT outcome FROM sim_trades WHERE sim_id=? ORDER BY id DESC LIMIT 10",
-        (sim[0],)).fetchall()
-    conn.close()
-    count = 0
-    for (outcome,) in trades:
-        if outcome == "LOSS":
-            count += 1
-        else:
-            break
-    return count
+    return check_risk_all()["consec"]
+
+def check_max_concurrent():
+    r = check_risk_all()
+    return r["mc_ok"], r["mc_total"]
 
 
 def get_active_positions():
     """Get currently active (unevaluated) positions across timeframes."""
     conn = sqlite3.connect(trading.DB_FILE)
-    daily = conn.execute("SELECT id, predicted_direction FROM predictions WHERE outcome IS NULL").fetchall()
-    fourh = conn.execute("SELECT id, predicted_direction FROM predictions_4h WHERE outcome IS NULL").fetchall()
-    conn.close()
+    try:
+        daily = conn.execute("SELECT id, predicted_direction FROM predictions WHERE outcome IS NULL").fetchall()
+        fourh = conn.execute("SELECT id, predicted_direction FROM predictions_4h WHERE outcome IS NULL").fetchall()
+    finally:
+        conn.close()
     return daily, fourh
-
-
-def check_max_concurrent():
-    """Check if max concurrent positions reached."""
-    daily, fourh = get_active_positions()
-    total = len(daily) + len(fourh)
-    return total < CFG["risk"]["max_concurrent_positions"], total
 
 
 def adjust_lot_for_correlation(lot, direction):

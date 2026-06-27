@@ -48,7 +48,13 @@ def update_data():
     df = yf.download("GC=F", period="5d", interval="4h", progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [c[0] for c in df.columns]
+    if df.empty or len(df) == 0:
+        log("WARNING: yfinance returned empty 4H data, skipping update")
+        return
     df.reset_index(inplace=True)
+    if len(df.columns) < 6:
+        log(f"WARNING: yfinance returned {len(df.columns)} columns, expected 6. Skipping.")
+        return
     df.columns = ["Date", "Open", "High", "Low", "Close", "Volume"]
     df.set_index("Date", inplace=True)
     df.sort_index(inplace=True)
@@ -74,7 +80,8 @@ def _features_4h(df):
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
     exclude = ["Close", "High", "Low", "Open", "Volume", "Target", "sample_weight",
                "DXY_Close", "TIP_Close", "Silver_Close", "BTC_Close", "USDJPY_Close",
-               "EURUSD_Close", "Copper_Close"]
+               "EURUSD_Close", "Copper_Close", "VIX_Close", "SPY_Close", "US10Y_Close",
+               "OIL_Close", "Breakeven_5Y", "Breakeven_10Y", "GPR_Index"]
     cols = [c for c in df.columns if c not in exclude]
     # Fill NaN in features with 0
     df[cols] = df[cols].fillna(0)

@@ -1,7 +1,7 @@
 """XAUUSD Trading Dashboard — Web monitoring interface."""
-import os, sys, json, sqlite3, subprocess
+import os, sys, json, sqlite3, subprocess, secrets
 from datetime import datetime, timedelta
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, abort
 import pandas as pd
 import numpy as np
 
@@ -11,10 +11,33 @@ sys.path.insert(0, BASE_DIR)
 import trading
 import yaml
 
-with open(os.path.join(BASE_DIR, "config.yaml")) as f:
-    CFG = yaml.safe_load(f)
+try:
+    with open(os.path.join(BASE_DIR, "config.yaml")) as f:
+        CFG = yaml.safe_load(f)
+except Exception:
+    CFG = {}
 
 app = Flask(__name__)
+
+# Generate or load API key
+DASHBOARD_KEY_FILE = os.path.join(BASE_DIR, ".dashboard_key")
+def _get_api_key():
+    try:
+        with open(DASHBOARD_KEY_FILE) as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        key = secrets.token_urlsafe(32)
+        with open(DASHBOARD_KEY_FILE, "w") as f:
+            f.write(key)
+        return key
+
+API_KEY = _get_api_key()
+
+def _check_auth():
+    """Check API key for action endpoints."""
+    key = request.headers.get("X-API-Key", "")
+    if key != API_KEY:
+        abort(403, description="Invalid API key")
 
 # Simple TTL cache
 _cache = {}
@@ -157,6 +180,7 @@ def api_status():
             "bot_alive": bot_alive, "live_price": live, "heartbeat": hb,
             "last_prediction": last_pred, "last_data_date": last_data,
             "data_age_days": age_days, "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "api_key": API_KEY,
         }
     return jsonify(_cached("status", 15, _compute))
 
@@ -167,8 +191,8 @@ def api_overview():
     sim = _db_query_one("SELECT balance, initial_balance FROM simulation WHERE active=1 ORDER BY id DESC LIMIT 1")
 
     # Trade stats (daily + 4H combined)
-    daily_stats = _db_query_one("SELECT COUNT(*) as total, SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as wins, SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses FROM predictions WHERE outcome IS NOT NULL")
-    fourh_stats = _db_query_one("SELECT COUNT(*) as total, SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as wins, SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses FROM predictions_4h WHERE outcome IS NOT NULL")
+    daily_stats = _db_query_one("SELECT COUNT(*) as total, SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as wins, SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses FROM predictions WHERE outcome IS NOT NULL") or {"total": 0, "wins": 0, "losses": 0}
+    fourh_stats = _db_query_one("SELECT COUNT(*) as total, SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as wins, SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses FROM predictions_4h WHERE outcome IS NOT NULL") or {"total": 0, "wins": 0, "losses": 0}
 
     total = (daily_stats["total"] or 0) + (fourh_stats["total"] or 0)
     wins = (daily_stats["wins"] or 0) + (fourh_stats["wins"] or 0)
@@ -247,57 +271,57 @@ def api_signals():
 
 @app.route("/api/equity")
 def api_equity():
+    sim = _db_query_one("SELECT initial_balance FROM simulation WHERE active=1 ORDER BY id DESC LIMIT 1")
+    initial = sim["initial_balance"] if sim else 100
+
     trades = _db_query("""
         SELECT balance_after, created_at FROM sim_trades ORDER BY id
     """)
     if not trades:
-        # Fallback: use predictions result_pct
         preds = _db_query("""
             SELECT result_pct, date FROM predictions WHERE outcome IS NOT NULL ORDER BY id
         """)
         if not preds:
-            return jsonify({"points": [], "initial": 100, "peak": 100})
-        equity = [100]
+            return jsonify({"points": [], "initial": initial, "peak": initial})
+        equity = [initial]
         for p in preds:
             equity.append(round(equity[-1] * (1 + (p["result_pct"] or 0) / 100), 2))
         points = [{"date": preds[i]["date"], "balance": equity[i+1]} for i in range(len(preds))]
-        return jsonify({"points": points, "initial": 100, "peak": max(equity)})
+        return jsonify({"points": points, "initial": initial, "peak": max(equity)})
 
     points = [{"date": t["created_at"][:10], "balance": t["balance_after"]} for t in trades]
     peak = max(t["balance_after"] for t in trades)
-    return jsonify({"points": points, "initial": trades[0]["balance_after"] - (trades[0]["balance_after"] - 100), "peak": peak})
+    return jsonify({"points": points, "initial": initial, "peak": peak})
 
 
 @app.route("/api/risk")
 def api_risk():
     try:
-        from simulation import (check_drawdown_limit, check_weekly_loss_limit,
-                                 get_consecutive_losses, get_volatility_regime, check_max_concurrent)
-        dd_ok, dd_pct = check_drawdown_limit()
-        wl_ok, wl_pnl = check_weekly_loss_limit()
-        consec = get_consecutive_losses()
+        from simulation import check_risk_all
+        r = check_risk_all()
+    except Exception as e:
+        return jsonify({"error": str(e), "dd_ok": False, "wl_ok": False, "consec": -1, "mc_ok": False})
+
+    regime = "unknown"
+    try:
+        from simulation import get_volatility_regime
         regime = get_volatility_regime()
-        mc_ok, mc_total = check_max_concurrent()
     except Exception:
-        dd_ok, dd_pct = True, 0
-        wl_ok, wl_pnl = True, 0
-        consec = 0
-        regime = "unknown"
-        mc_ok, mc_total = True, 0
+        pass
 
     return jsonify({
-        "drawdown_pct": round(dd_pct * 100, 1),
-        "drawdown_ok": dd_ok,
-        "drawdown_limit": CFG["risk"]["max_drawdown_pct"] * 100,
-        "weekly_pnl": round(wl_pnl, 2),
-        "weekly_ok": wl_ok,
-        "weekly_limit_pct": CFG["risk"]["weekly_loss_limit_pct"] * 100,
-        "consecutive_losses": consec,
-        "cooldown_limit": CFG["risk"]["cooldown_after_losses"],
+        "drawdown_pct": round(r["dd_pct"] * 100, 1),
+        "drawdown_ok": r["dd_ok"],
+        "drawdown_limit": CFG.get("risk", {}).get("max_drawdown_pct", 0.15) * 100,
+        "weekly_pnl": round(r["wl_pnl"], 2),
+        "weekly_ok": r["wl_ok"],
+        "weekly_limit_pct": CFG.get("risk", {}).get("weekly_loss_limit_pct", 0.05) * 100,
+        "consecutive_losses": r["consec"],
+        "cooldown_limit": CFG.get("risk", {}).get("cooldown_after_losses", 3),
         "volatility_regime": regime,
-        "max_concurrent": CFG["risk"]["max_concurrent_positions"],
-        "current_positions": mc_total,
-        "concurrent_ok": mc_ok,
+        "max_concurrent": CFG.get("risk", {}).get("max_concurrent_positions", 2),
+        "current_positions": r["mc_total"],
+        "concurrent_ok": r["mc_ok"],
     })
 
 
@@ -330,14 +354,14 @@ def api_trades():
     daily = _db_query("""
         SELECT id, 'Daily' as timeframe, date, price, predicted_direction as direction,
                confidence, outcome, outcome_detail, result_pct, sl, tp1, tp2
-        FROM predictions ORDER BY id DESC
+        FROM predictions ORDER BY id DESC LIMIT 200
     """)
     fourh = _db_query("""
         SELECT id, '4H' as timeframe, date || ' ' || time as date, price, predicted_direction as direction,
                confidence, outcome, outcome_detail, result_pct, sl, tp1, tp2
-        FROM predictions_4h ORDER BY id DESC
+        FROM predictions_4h ORDER BY id DESC LIMIT 200
     """)
-    all_trades = sorted(daily + fourh, key=lambda x: x["id"], reverse=True)
+    all_trades = sorted(daily + fourh, key=lambda x: x["id"], reverse=True)[:200]
     return jsonify(all_trades)
 
 
@@ -438,6 +462,7 @@ def api_price_history():
 
 @app.route("/api/action", methods=["POST"])
 def api_action():
+    _check_auth()
     data = request.get_json()
     action = data.get("action")
     if not action:
@@ -459,6 +484,10 @@ def api_action():
             return jsonify({"ok": r.returncode == 0, "output": r.stdout.strip() or r.stderr[-300:]})
         elif action == "start_sim":
             balance = data.get("balance", 100)
+            try:
+                balance = max(1, min(100000, float(balance)))
+            except (ValueError, TypeError):
+                balance = 100
             r = subprocess.run([p, "-c", f"import simulation as sim; sim.start_sim({float(balance)}); print('OK')"],
                                capture_output=True, text=True, cwd=BASE_DIR, timeout=30)
             return jsonify({"ok": r.returncode == 0, "output": r.stdout.strip() or r.stderr[-300:]})
@@ -484,5 +513,6 @@ if __name__ == "__main__":
     print("=" * 50)
     print("  XAUUSD Trading Dashboard")
     print(f"  http://localhost:5050")
+    print(f"  API Key: {API_KEY}")
     print("=" * 50)
-    app.run(host="0.0.0.0", port=5050, debug=False)
+    app.run(host="127.0.0.1", port=5050, debug=False)

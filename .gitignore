@@ -27,3 +27,7 @@ Thumbs.db
 # OneDrive sync
 *.lnk
 .tg_offset
+
+# Secrets
+.env
+.dashboard_key

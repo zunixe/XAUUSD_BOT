@@ -9,13 +9,11 @@ DB_FILE = os.path.join(BASE_DIR, "xauusd_journal.db")
 
 def run_monte_carlo(n_sims=10000, table="predictions"):
     """Simulate trade sequence randomization. Returns dict of statistics."""
-    conn = sqlite3.connect(DB_FILE)
     try:
-        trades = conn.execute(f"SELECT result_pct FROM {table} WHERE outcome IS NOT NULL").fetchall()
+        with sqlite3.connect(DB_FILE) as conn:
+            trades = conn.execute(f"SELECT result_pct FROM {table} WHERE outcome IS NOT NULL").fetchall()
     except Exception:
-        conn.close()
         return None
-    conn.close()
 
     if len(trades) < 20:
         return None

@@ -142,11 +142,10 @@ def retrain_model():
     # Multipliers aligned with compute_tp_sl: TP=0.8 ATR, SL=1.2 ATR
     df["Target"] = trading.atr_target(df, forward=forward_days, atr_mult=0.8, sl_mult=1.2)
 
-    # Override labels with real outcomes (directional, not SL/TP based)
+    # Override labels with real outcomes (directional, with time-decay weighting)
     df["sample_weight"] = 1.0
     try:
-        import sqlite3 as _sqlite3
-        conn = _sqlite3.connect(trading.DB_FILE)
+        conn = sqlite3.connect(trading.DB_FILE)
         outcomes = pd.read_sql_query(
             "SELECT date, predicted_direction, outcome FROM predictions"
             " WHERE outcome IN ('WIN','LOSS') AND sl IS NOT NULL AND tp1 IS NOT NULL ORDER BY id", conn
@@ -157,6 +156,7 @@ def retrain_model():
             outcomes["date"] = pd.to_datetime(outcomes["date"]).dt.date
             outcomes = outcomes.drop_duplicates("date", keep="last")
             n_applied = 0
+            now_date = datetime.now().date()
             for _, row in outcomes.iterrows():
                 dt = row["date"]
                 mask = df.index.date == dt
@@ -171,9 +171,12 @@ def retrain_model():
                         df.loc[mask, "Target"] = 0
                     else:
                         df.loc[mask, "Target"] = 0
-                    df.loc[mask, "sample_weight"] = 2.0
+                    # Time-decay: recent outcomes weighted more
+                    age_days = (now_date - dt).days
+                    weight = max(1.5, 3.0 - age_days * 0.03)  # 3.0 today, 1.5 after 50 days, min 1.5
+                    df.loc[mask, "sample_weight"] = weight
                     n_applied += 1
-            log(f"[LEARN] Overrode {n_applied} labels with real outcomes (weight=2x)")
+            log(f"[LEARN] Overrode {n_applied} labels with real outcomes (time-decay weight)")
         elif len(outcomes) > 0:
             log(f"[LEARN] Skipped override: only {len(outcomes)} real outcomes")
     except Exception as e:
@@ -193,17 +196,17 @@ def retrain_model():
     from sklearn.preprocessing import RobustScaler
     from sklearn.metrics import accuracy_score, f1_score, classification_report
 
-    # Single scaler: fit once on all non-OOT data
     folds, oot = trading.walk_forward_split(X, n_splits=4, embargo=3)
     oot_idx, _ = oot
-    scaler = RobustScaler()
-    scaler.fit(X[:len(X) - len(oot_idx)])  # fit on all training+val data
 
     models, scores = [], []
     n_classes = 3
+    scaler = None
 
     for fold_i, (train_idx, val_idx) in enumerate(folds):
-        X_train = scaler.transform(X[train_idx])
+        # Fit scaler ONLY on training data (no leakage)
+        scaler = RobustScaler()
+        X_train = scaler.fit_transform(X[train_idx])
         X_val = scaler.transform(X[val_idx])
         y_train, y_val = y[train_idx], y[val_idx]
         sw_train = sample_weights[train_idx] if sample_weights is not None else None
@@ -227,7 +230,7 @@ def retrain_model():
             def objective(trial):
                 params = {
                     "n_estimators": trial.suggest_int("n_estimators", 200, 600),
-                    "max_depth": trial.suggest_int("max_depth", 4, 10),
+                    "max_depth": trial.suggest_int("max_depth", 4, 7),
                     "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.05, log=True),
                     "subsample": trial.suggest_float("subsample", 0.6, 0.95),
                     "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 0.9),
@@ -247,10 +250,10 @@ def retrain_model():
 
             sampler = optuna.samplers.TPESampler(seed=42)
             study = optuna.create_study(direction="maximize", sampler=sampler)
-            study.optimize(objective, n_trials=30, show_progress_bar=False)
+            study.optimize(objective, n_trials=20, show_progress_bar=False)
             best_params = study.best_params
         except ImportError:
-            best_params = {"n_estimators": 400, "max_depth": 6, "learning_rate": 0.02,
+            best_params = {"n_estimators": 400, "max_depth": 7, "learning_rate": 0.02,
                            "subsample": 0.8, "colsample_bytree": 0.7, "min_child_weight": 3,
                            "reg_alpha": 0.1, "reg_lambda": 2.0}
 
@@ -305,9 +308,9 @@ def retrain_model():
     avg_acc = np.mean([s["acc"] for s in scores])
     avg_f1 = np.mean([s["f1"] for s in scores])
 
-    # OOT evaluation with single scaler
+    # OOT evaluation using last fold's scaler
     oot_acc = None
-    if len(oot_idx) > 5:
+    if len(oot_idx) > 5 and scaler is not None:
         X_oot = scaler.transform(X[oot_idx])
         y_oot = y[oot_idx]
         # Ensemble 3-class prediction
@@ -336,7 +339,6 @@ def retrain_model():
         joblib.dump(_data, _tmp.name)
         os.replace(_tmp.name, MODEL_FILE)
         # Save versioned copy
-        import shutil
         shutil.copy2(MODEL_FILE, versioned_file)
     except Exception:
         try:
@@ -364,7 +366,7 @@ def run_prediction_job():
     p = sys.executable
     r = subprocess.run([p, "update_data.py"], capture_output=True, text=True, cwd=trading.BASE_DIR)
     if r.returncode != 0:
-        log(f"Gagal update data: {r.stderr[:150]}")
+        log(f"Gagal update data: {r.stderr[:500]}")
         return None
 
     import joblib
@@ -384,6 +386,10 @@ def run_prediction_job():
     df.set_index("Date", inplace=True)
     latest_price = float(df["Close"].iloc[-1])
     latest_date = df.index[-1]
+
+    # Compute levels and daily trend from raw df (before feature engineering)
+    levels = trading.calculate_levels(df)
+    daily_trend = trading.get_daily_trend(df)
 
     df, _ = _engineer_features_full(df)
     last_row = df[feature_cols].dropna().iloc[-1:]
@@ -429,12 +435,9 @@ def run_prediction_job():
         except Exception:
             pass
 
-    # Multi-timeframe confirmation (Phase 2.2): check daily trend for 4H agreement
+    # Multi-timeframe confirmation (Phase 2.2): check daily trend
     if direction != "NO_TRADE":
         try:
-            daily_csv = os.path.join(trading.BASE_DIR, "xauusd_daily.csv")
-            df_daily = pd.read_csv(daily_csv, parse_dates=["Date"], index_col="Date").sort_index()
-            daily_trend = trading.get_daily_trend(df_daily)
             dt_val = daily_trend.iloc[-1] if len(daily_trend) > 0 else 0
             if direction.startswith("BUY") and dt_val == -1:
                 log(f"[FILTER] BUY rejected: daily trend bearish")
@@ -457,8 +460,6 @@ def run_prediction_job():
             pass
 
     # Hitung levels & TP/SL hanya untuk BUY/SELL
-    trade_df = trading.load_daily(os.path.join(trading.BASE_DIR, "xauusd_daily.csv"))
-    levels = trading.calculate_levels(trade_df)
     sl = tp1 = tp2 = None
     entry_realtime = None
     if direction != "NO_TRADE":
@@ -741,8 +742,8 @@ def run_daemon(interval_hours=4):
                 _, issues = validate_and_report(os.path.join(trading.BASE_DIR, "xauusd_daily.csv"))
                 if any("STALE" in i or "INVALID" in i for i in issues):
                     log(f"[WARN] Data quality issues: {issues}")
-            except Exception:
-                pass
+            except Exception as e:
+                log(f"[WARN] Data validation error: {e}")
 
             # Risk management checks (Phase 3)
             try:
@@ -764,8 +765,9 @@ def run_daemon(interval_hours=4):
                     log(f"[RISK] {consec} consecutive losses. Cooldown.")
                     time.sleep(interval_hours * 3600)
                     continue
-            except Exception:
-                pass
+            except Exception as e:
+                log(f"[RISK] Risk check error: {e}")
+                telegram_notifier._send_telegram(f"<b>[RISK]</b> Risk check failed: {str(e)[:100]}")
 
             # Evaluate + retrain + predict
             evaluated = evaluate_past_predictions()
@@ -783,14 +785,14 @@ def run_daemon(interval_hours=4):
                 updated = manage_trailing_stops()
                 if updated > 0:
                     log(f"[TRAIL] Updated {updated} trailing stops")
-            except Exception:
-                pass
+            except Exception as e:
+                log(f"[TRAIL] Trailing stop error: {e}")
 
             # Model health check (Phase 4.2)
             try:
                 _check_model_health()
-            except Exception:
-                pass
+            except Exception as e:
+                log(f"[ALERT] Model health check error: {e}")
 
             # Monthly report
             month_key = datetime.now().strftime("%Y-%m")
@@ -802,8 +804,8 @@ def run_daemon(interval_hours=4):
                     mc = run_monte_carlo()
                     if mc:
                         telegram_notifier._send_telegram(f"<b>[MONTE CARLO]</b>\n<pre>{format_mc_report(mc)}</pre>")
-                except Exception:
-                    pass
+                except Exception as e:
+                    log(f"[MC] Monte Carlo error: {e}")
                 last_monthly = month_key
 
             # Heartbeat (Phase 4.1)
@@ -823,8 +825,8 @@ def run_daemon(interval_hours=4):
                     telegram_notifier._send_telegram(msg)
                     log(f"[HEARTBEAT] Alive | Balance: {bal} | Consec losses: {cl}")
                     last_heartbeat = datetime.now()
-                except Exception:
-                    pass
+                except Exception as e:
+                    log(f"[HEARTBEAT] Heartbeat error: {e}")
 
             log(f"Tidur {interval_hours} jam...")
             log("-" * 55)

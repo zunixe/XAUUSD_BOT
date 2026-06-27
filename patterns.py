@@ -11,7 +11,6 @@ from numpy.lib.stride_tricks import sliding_window_view
 
 def detect_candlestick(df):
     """Add candlestick pattern features (binary + ratio)"""
-    df = df.copy()
     o, h, l, c = df["Open"], df["High"], df["Low"], df["Close"]
 
     body = abs(c - o)
@@ -48,7 +47,6 @@ def detect_candlestick(df):
 
 def detect_support_resistance(df, lookback=50):
     """Add distance to S/R levels + breakout flags"""
-    df = df.copy()
     h, l, c = df["High"], df["Low"], df["Close"]
 
     recent_high = h.rolling(lookback).max()
@@ -84,7 +82,6 @@ def detect_support_resistance(df, lookback=50):
 
 def detect_double_top_bottom(df, lookback=30, tolerance=0.005):
     """Detect double top/bottom pattern using vectorized numpy (O(n*k^2) worst case)."""
-    df = df.copy()
     h_arr = df["High"].values.astype(float)
     l_arr = df["Low"].values.astype(float)
     n = len(df)

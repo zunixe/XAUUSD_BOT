@@ -144,6 +144,10 @@ tailwind.config = {
         <span class="text-[11px] opacity-50 uppercase">Data</span>
         <span id="data-age" class="font-mono text-xs opacity-70">...</span>
       </div>
+      <div class="flex items-center gap-1">
+        <span class="text-[11px] opacity-50 uppercase">Key</span>
+        <span id="api-key-display" class="font-mono text-[10px] opacity-70 max-w-[80px] truncate inline-block align-middle cursor-pointer" onclick="copyApiKey()" title="Click to copy">...</span>
+      </div>
       <button onclick="toggleTheme()" class="theme-btn" id="theme-btn">🌙</button>
     </div>
   </div>
@@ -384,6 +388,12 @@ async function refreshStatus() {
   }
   document.getElementById('heartbeat').textContent = d.heartbeat || 'N/A';
   document.getElementById('data-age').textContent = d.data_age_days >= 0 ? d.last_data_date + ' (' + d.data_age_days + 'd)' : 'N/A';
+  const akEl = document.getElementById('api-key-display');
+  if (d.api_key) { akEl.textContent = d.api_key; akEl.title = 'Click to copy API key'; }
+}
+function copyApiKey() {
+  const key = document.getElementById('api-key-display').textContent;
+  navigator.clipboard?.writeText(key).then(() => showToast('API key copied!')).catch(() => {});
 }
 
 async function refreshOverview() {
@@ -576,7 +586,8 @@ async function doAction(action) {
   if (action === 'start_sim') body.balance = document.getElementById('sim-balance').value;
   showToast(`Running ${action}...`, true);
   try {
-    const r = await fetch('/api/action', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+    const apiKey = document.getElementById('api-key-display').textContent;
+    const r = await fetch('/api/action', { method:'POST', headers:{'Content-Type':'application/json','X-API-Key':apiKey}, body:JSON.stringify(body) });
     const result = await r.json();
     showToast(result.ok ? `✅ ${result.output}` : `❌ ${result.error||result.output}`, result.ok);
     if (result.ok) setTimeout(() => refreshAll(), 2000);

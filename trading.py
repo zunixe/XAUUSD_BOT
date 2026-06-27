@@ -12,8 +12,12 @@ DB_FILE = os.path.join(BASE_DIR, "xauusd_journal.db")
 CSV_DAILY = os.path.join(BASE_DIR, "xauusd_daily.csv")
 CSV_4H = os.path.join(BASE_DIR, "xauusd_4h.csv")
 
-with open(os.path.join(BASE_DIR, "config.yaml")) as f:
-    CFG = yaml.safe_load(f)
+try:
+    with open(os.path.join(BASE_DIR, "config.yaml")) as f:
+        CFG = yaml.safe_load(f)
+except Exception as e:
+    print(f"[WARN] Failed to load config.yaml: {e}")
+    CFG = {}
 
 
 def load_daily(csv_path=None):
@@ -245,10 +249,13 @@ def engineer_features(df, return_periods=None, return_prefix="d"):
     df["Is_Trending"] = (df["ADX_14"] > 25).astype(int)
     df["Trend_Direction"] = np.where(df["Plus_DI"] > df["Minus_DI"], 1, -1)
 
-    # ATR percentile rank (vectorized, no lambda)
-    atr_series = df["ATR_14"]
-    df["ATR_Pctile_100"] = atr_series.rolling(100).apply(
-        lambda x: (x.values[-1] <= x.values).sum() / len(x), raw=False)
+    # ATR percentile rank (vectorized, faster than lambda)
+    atr_vals = df["ATR_14"].values
+    pctile = np.full(len(atr_vals), np.nan)
+    for i in range(99, len(atr_vals)):
+        window = atr_vals[i-99:i+1]
+        pctile[i] = (window <= atr_vals[i]).sum() / 100
+    df["ATR_Pctile_100"] = pctile
 
     # Cyclical encoding
     dow = df.index.dayofweek
@@ -306,8 +313,8 @@ def engineer_features_4h(df):
                 macro = macro.reindex(df.index, method="ffill")
                 if colname in macro.columns:
                     df[colname] = macro[colname]
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[WARN] 4H macro {csv_file}: {e}")
 
     # Add macro features for 4H
     df = _add_macro_features(df, close)
@@ -321,7 +328,8 @@ def engineer_features_4h(df):
             df["Daily_Trend"] = daily_trend.reindex(df.index, method="ffill")
             weekly_trend = get_weekly_trend(df_daily)
             df["Weekly_Trend"] = weekly_trend.reindex(df.index, method="ffill")
-        except Exception:
+        except Exception as e:
+            print(f"[WARN] 4H trend injection: {e}")
             df["Daily_Trend"] = 0
             df["Weekly_Trend"] = 0
     else:

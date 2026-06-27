@@ -3,7 +3,7 @@ Telegram notifier for XAUUSD trade signals.
 Reads credentials from Hermes Agent .env, sends via Telegram Bot API.
 Uses shared trading.py for levels/TP/SL.
 """
-import os, re, json, time, sys, threading, subprocess, urllib.request, urllib.error, ssl
+import os, re, json, time, sys, threading, subprocess, urllib.request, urllib.error
 from datetime import datetime
 import yfinance as yf
 import trading
@@ -17,15 +17,8 @@ _env_cache = None
 _env_cache_mtime = 0
 
 
-def _ssl_ctx():
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    return ctx
-
-
 def _urlopen(req, timeout=15):
-    return urllib.request.urlopen(req, context=_ssl_ctx(), timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout)
 
 
 def _load_offset():
@@ -522,7 +515,3 @@ def process_commands():
     except Exception as e:
         with open(os.path.join(trading.BASE_DIR, "poll.log"), "a") as f:
             f.write(f"[{datetime.now()}] process_commands error: {e}\n")
-
-
-if __name__ == "__main__":
-    send_signal(999, "BUY (Bullish)", 0.75, 4210.80, "2026-06-26", 0.55)
