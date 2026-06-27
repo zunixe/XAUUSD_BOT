@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>XAUUSD Trading Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script>
+tailwind.config = {
+  darkMode: 'class',
+  theme: { extend: { colors: {
+    dark: { 900:'#0a0a12', 800:'#12121e', 700:'#1a1a2e', 600:'#252540' },
+  }}}
+}
+</script>
+<style>
+  body { font-family: 'Inter', -apple-system, system-ui, sans-serif; }
+  .dark body { background: #0a0a12; color: #e2e8f0; }
+  .light body { background: #f1f5f9; color: #1e293b; }
+
+  .card-dark { background: linear-gradient(135deg, #12121e 0%, #1a1a2e 100%); border: 1px solid rgba(255,255,255,0.06); border-radius: 16px; }
+  .card-light { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px; }
+  .light .card-dark { background: #ffffff; border-color: #e2e8f0; }
+
+  .card-blue { border-left: 4px solid #3b82f6; }
+  .card-green { border-left: 4px solid #22c55e; }
+  .card-red { border-left: 4px solid #ef4444; }
+  .card-purple { border-left: 4px solid #a855f7; }
+  .card-amber { border-left: 4px solid #f59e0b; }
+  .card-cyan { border-left: 4px solid #06b6d4; }
+  .card-pink { border-left: 4px solid #ec4899; }
+  .card-teal { border-left: 4px solid #14b8a6; }
+
+  .card-header { display:flex; align-items:center; gap:8px; margin-bottom:12px; padding-bottom:8px; border-bottom:1px solid rgba(255,255,255,0.06); }
+  .light .card-header { border-bottom-color: #f1f5f9; }
+  .card-icon { width:32px; height:32px; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:16px; }
+  .icon-blue { background: rgba(59,130,246,0.15); }
+  .icon-green { background: rgba(34,197,94,0.15); }
+  .icon-red { background: rgba(239,68,68,0.15); }
+  .icon-purple { background: rgba(168,85,247,0.15); }
+  .icon-amber { background: rgba(245,158,11,0.15); }
+  .icon-cyan { background: rgba(6,182,212,0.15); }
+  .icon-pink { background: rgba(236,72,153,0.15); }
+  .icon-teal { background: rgba(20,184,166,0.15); }
+
+  .stat-box { padding:12px; border-radius:12px; text-align:center; }
+  .dark .stat-box { background: rgba(255,255,255,0.03); }
+  .light .stat-box { background: #f8fafc; }
+
+  .badge { padding:2px 8px; border-radius:6px; font-size:11px; font-weight:600; }
+  .badge-green { background:rgba(34,197,94,0.15); color:#4ade80; }
+  .badge-red { background:rgba(239,68,68,0.15); color:#f87171; }
+  .badge-blue { background:rgba(59,130,246,0.15); color:#60a5fa; }
+  .badge-amber { background:rgba(245,158,11,0.15); color:#fbbf24; }
+  .badge-gray { background:rgba(148,163,184,0.15); color:#94a3b8; }
+
+  .btn { padding:8px 16px; border-radius:10px; font-weight:600; font-size:13px; cursor:pointer; transition:all 0.2s; border:none; }
+  .btn-blue { background:linear-gradient(135deg,#3b82f6,#2563eb); color:#fff; }
+  .btn-blue:hover { transform:translateY(-1px); box-shadow:0 4px 12px rgba(59,130,246,0.4); }
+  .btn-green { background:linear-gradient(135deg,#22c55e,#16a34a); color:#fff; }
+  .btn-green:hover { transform:translateY(-1px); box-shadow:0 4px 12px rgba(34,197,94,0.4); }
+  .btn-red { background:linear-gradient(135deg,#ef4444,#dc2626); color:#fff; }
+  .btn-red:hover { transform:translateY(-1px); box-shadow:0 4px 12px rgba(239,68,68,0.4); }
+  .btn-amber { background:linear-gradient(135deg,#f59e0b,#d97706); color:#fff; }
+  .btn-amber:hover { transform:translateY(-1px); box-shadow:0 4px 12px rgba(245,158,11,0.4); }
+
+  .progress-track { height:6px; border-radius:3px; overflow:hidden; }
+  .dark .progress-track { background:rgba(255,255,255,0.06); }
+  .light .progress-track { background:#e2e8f0; }
+  .progress-fill { height:100%; border-radius:3px; transition:width 0.5s; }
+
+  .log-line { padding:3px 8px; font-family:'JetBrains Mono',monospace; font-size:11px; border-left:3px solid transparent; }
+  .log-line:nth-child(even) { background:rgba(255,255,255,0.01); }
+  .light .log-line:nth-child(even) { background:rgba(0,0,0,0.02); }
+  .log-error { border-left-color:#ef4444; color:#f87171; }
+  .log-warning { border-left-color:#f59e0b; color:#fbbf24; }
+  .log-success { border-left-color:#22c55e; color:#4ade80; }
+  .log-info { color:#94a3b8; }
+
+  .macro-chip { padding:10px 12px; border-radius:12px; text-align:center; transition:transform 0.2s; }
+  .macro-chip:hover { transform:translateY(-2px); }
+  .dark .macro-chip { background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.06); }
+  .light .macro-chip { background:#fff; border:1px solid #e2e8f0; }
+
+  .signal-card { padding:16px; border-radius:12px; }
+  .dark .signal-card { background:rgba(255,255,255,0.03); }
+  .light .signal-card { background:#f8fafc; }
+
+  .table-row { transition:background 0.15s; }
+  .dark .table-row:hover { background:rgba(255,255,255,0.03); }
+  .light .table-row:hover { background:#f8fafc; }
+
+  .theme-btn { width:36px; height:36px; border-radius:10px; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:18px; border:none; transition:all 0.2s; }
+  .dark .theme-btn { background:rgba(255,255,255,0.06); }
+  .light .theme-btn { background:#e2e8f0; }
+
+  .header-bar { padding:16px 20px; border-radius:16px; margin-bottom:24px; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:16px; }
+  .dark .header-bar { background:linear-gradient(135deg,#12121e,#1a1a2e); border:1px solid rgba(255,255,255,0.06); }
+  .light .header-bar { background:#fff; border:1px solid #e2e8f0; }
+
+  .live-dot { width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:6px; }
+  .dot-alive { background:#22c55e; box-shadow:0 0 8px rgba(34,197,94,0.6); animation:pulse 2s infinite; }
+  .dot-dead { background:#ef4444; box-shadow:0 0 8px rgba(239,68,68,0.6); }
+  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.6;transform:scale(.8)} }
+
+  input[type=number], select { padding:6px 10px; border-radius:8px; font-size:13px; outline:none; }
+  .dark input, .dark select { background:#12121e; border:1px solid rgba(255,255,255,0.1); color:#e2e8f0; }
+  .light input, .light select { background:#fff; border:1px solid #d1d5db; color:#1e293b; }
+
+  .toast { position:fixed; top:20px; right:20px; padding:12px 20px; border-radius:12px; font-size:13px; font-weight:600; z-index:100; transform:translateX(120%); transition:transform 0.3s; }
+  .toast.show { transform:translateX(0); }
+  .toast-ok { background:linear-gradient(135deg,#22c55e,#16a34a); color:#fff; }
+  .toast-err { background:linear-gradient(135deg,#ef4444,#dc2626); color:#fff; }
+</style>
+</head>
+<body class="min-h-screen">
+
+<div id="toast" class="toast"></div>
+
+<div class="max-w-[1600px] mx-auto p-4 md:p-6">
+  <!-- HEADER -->
+  <div class="header-bar">
+    <div class="flex items-center gap-4">
+      <div class="flex items-center gap-2">
+        <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-amber-500 to-yellow-600 flex items-center justify-center text-white font-bold text-sm">Au</div>
+        <div>
+          <div class="font-bold text-sm">XAUUSD Trading</div>
+          <div class="text-[10px] opacity-50">AI Trading System v2</div>
+        </div>
+      </div>
+      <span id="bot-status" class="badge">...</span>
+    </div>
+    <div class="flex items-center gap-5 text-sm">
+      <div class="flex items-center gap-2">
+        <span class="text-[11px] opacity-50 uppercase">Price</span>
+        <span id="live-price" class="font-bold font-mono">...</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-[11px] opacity-50 uppercase">Heartbeat</span>
+        <span id="heartbeat" class="font-mono text-xs opacity-70">...</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-[11px] opacity-50 uppercase">Data</span>
+        <span id="data-age" class="font-mono text-xs opacity-70">...</span>
+      </div>
+      <button onclick="toggleTheme()" class="theme-btn" id="theme-btn">🌙</button>
+    </div>
+  </div>
+
+  <!-- OVERVIEW CARDS -->
+  <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
+    <div class="card-dark card-blue p-5">
+      <div class="card-header">
+        <div class="card-icon icon-blue">💰</div>
+        <div class="text-xs font-semibold uppercase opacity-60">Balance</div>
+      </div>
+      <div class="text-2xl font-bold text-blue-400" id="balance">...</div>
+      <div class="text-xs mt-1" id="pnl">...</div>
+    </div>
+    <div class="card-dark card-green p-5">
+      <div class="card-header">
+        <div class="card-icon icon-green">🎯</div>
+        <div class="text-xs font-semibold uppercase opacity-60">Win Rate</div>
+      </div>
+      <div class="text-2xl font-bold text-green-400" id="win-rate">...</div>
+      <div class="text-xs mt-1 opacity-60" id="trade-count">...</div>
+    </div>
+    <div class="card-dark card-amber p-5">
+      <div class="card-header">
+        <div class="card-icon icon-amber">📈</div>
+        <div class="text-xs font-semibold uppercase opacity-60">Monthly Return</div>
+      </div>
+      <div class="text-2xl font-bold" id="monthly-return">...</div>
+      <div class="text-xs mt-1 opacity-60" id="active-count">...</div>
+    </div>
+    <div class="card-dark card-purple p-5">
+      <div class="card-header">
+        <div class="card-icon icon-purple">🌡️</div>
+        <div class="text-xs font-semibold uppercase opacity-60">Volatility Regime</div>
+      </div>
+      <div class="text-2xl font-bold" id="regime">...</div>
+      <div class="text-xs mt-1 opacity-60" id="adx-info">...</div>
+    </div>
+  </div>
+
+  <!-- LIVE SIGNALS -->
+  <div class="grid md:grid-cols-2 gap-4 mb-5">
+    <div class="card-dark card-cyan p-5">
+      <div class="card-header">
+        <div class="card-icon icon-cyan">📊</div>
+        <div class="text-xs font-semibold uppercase opacity-60">Daily Signal</div>
+      </div>
+      <div id="signal-daily" class="signal-card">Loading...</div>
+    </div>
+    <div class="card-dark card-teal p-5">
+      <div class="card-header">
+        <div class="card-icon icon-teal">⏱️</div>
+        <div class="text-xs font-semibold uppercase opacity-60">4H Signal</div>
+      </div>
+      <div id="signal-4h" class="signal-card">Loading...</div>
+    </div>
+  </div>
+
+  <!-- XAUUSD PRICE CHART -->
+  <div class="card-dark card-amber p-5 mb-5">
+    <div class="card-header" style="justify-content:space-between">
+      <div class="flex items-center gap-2">
+        <div class="card-icon icon-amber">🏆</div>
+        <div class="text-xs font-semibold uppercase opacity-60">XAUUSD Price Chart</div>
+        <span id="chart-price" class="font-bold font-mono text-sm ml-2"></span>
+      </div>
+      <div class="flex gap-2">
+        <button onclick="loadPriceChart(30)" class="btn text-xs" style="padding:4px 10px" id="btn-30d">1M</button>
+        <button onclick="loadPriceChart(90)" class="btn text-xs" style="padding:4px 10px" id="btn-90d">3M</button>
+        <button onclick="loadPriceChart(180)" class="btn text-xs" style="padding:4px 10px" id="btn-180d">6M</button>
+        <button onclick="loadPriceChart(365)" class="btn text-xs" style="padding:4px 10px" id="btn-365d">1Y</button>
+      </div>
+    </div>
+    <div class="h-80"><canvas id="price-chart"></canvas></div>
+    <div id="chart-levels" class="flex gap-4 mt-3 text-[11px] opacity-60 flex-wrap"></div>
+  </div>
+
+  <!-- EQUITY CURVE -->
+  <div class="card-dark card-blue p-5 mb-5">
+    <div class="card-header">
+      <div class="card-icon icon-blue">📉</div>
+      <div class="text-xs font-semibold uppercase opacity-60">Equity Curve</div>
+    </div>
+    <div class="h-64"><canvas id="equity-chart"></canvas></div>
+  </div>
+
+  <!-- RISK + MODEL -->
+  <div class="grid md:grid-cols-2 gap-4 mb-5">
+    <div class="card-dark card-red p-5">
+      <div class="card-header">
+        <div class="card-icon icon-red">🛡️</div>
+        <div class="text-xs font-semibold uppercase opacity-60">Risk Management</div>
+      </div>
+      <div id="risk-panel" class="space-y-3">Loading...</div>
+    </div>
+    <div class="card-dark card-purple p-5">
+      <div class="card-header">
+        <div class="card-icon icon-purple">🧠</div>
+        <div class="text-xs font-semibold uppercase opacity-60">Model Info</div>
+      </div>
+      <div id="model-panel">Loading...</div>
+      <div class="flex gap-2 mt-4 flex-wrap">
+        <button onclick="doAction('retrain_daily')" class="btn btn-blue">Retrain Daily</button>
+        <button onclick="doAction('retrain_4h')" class="btn btn-blue">Retrain 4H</button>
+        <button onclick="doAction('evaluate')" class="btn btn-amber">Evaluate</button>
+        <button onclick="doAction('predict')" class="btn btn-green">Predict Now</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TRADE HISTORY -->
+  <div class="card-dark card-amber p-5 mb-5">
+    <div class="card-header" style="justify-content:space-between">
+      <div class="flex items-center gap-2">
+        <div class="card-icon icon-amber">📋</div>
+        <div class="text-xs font-semibold uppercase opacity-60">Trade History</div>
+      </div>
+      <select id="trade-filter" onchange="renderTrades()" class="text-xs">
+        <option value="all">All Timeframes</option>
+        <option value="Daily">Daily Only</option>
+        <option value="4H">4H Only</option>
+      </select>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-left text-[10px] uppercase opacity-50">
+            <th class="p-2">ID</th><th class="p-2">TF</th><th class="p-2">Date</th>
+            <th class="p-2">Direction</th><th class="p-2">Conf</th><th class="p-2">Outcome</th>
+            <th class="p-2">Detail</th><th class="p-2">P&L</th><th class="p-2">SL</th>
+            <th class="p-2">TP1</th><th class="p-2">TP2</th>
+          </tr>
+        </thead>
+        <tbody id="trades-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- FEATURE IMPORTANCE + MONTE CARLO -->
+  <div class="grid md:grid-cols-2 gap-4 mb-5">
+    <div class="card-dark card-pink p-5">
+      <div class="card-header">
+        <div class="card-icon icon-pink">🔍</div>
+        <div class="text-xs font-semibold uppercase opacity-60">Top Features (SHAP)</div>
+      </div>
+      <div class="h-64"><canvas id="features-chart"></canvas></div>
+    </div>
+    <div class="card-dark card-green p-5">
+      <div class="card-header">
+        <div class="card-icon icon-green">🎲</div>
+        <div class="text-xs font-semibold uppercase opacity-60">Monte Carlo Simulation</div>
+      </div>
+      <div id="mc-stats" class="mb-3 text-sm">Loading...</div>
+      <div class="h-48"><canvas id="mc-chart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- MACRO -->
+  <div class="card-dark card-cyan p-5 mb-5">
+    <div class="card-header">
+      <div class="card-icon icon-cyan">🌍</div>
+      <div class="text-xs font-semibold uppercase opacity-60">Macro Dashboard</div>
+    </div>
+    <div class="grid grid-cols-3 md:grid-cols-5 lg:grid-cols-9 gap-3" id="macro-grid">Loading...</div>
+  </div>
+
+  <!-- LOGS + SIM ACTIONS -->
+  <div class="grid md:grid-cols-2 gap-4 mb-5">
+    <div class="card-dark card-teal p-5">
+      <div class="card-header">
+        <div class="card-icon icon-teal">📜</div>
+        <div class="text-xs font-semibold uppercase opacity-60">Recent Logs</div>
+      </div>
+      <div class="h-64 overflow-y-auto" id="log-viewer">Loading...</div>
+    </div>
+    <div class="card-dark card-amber p-5">
+      <div class="card-header">
+        <div class="card-icon icon-amber">🎮</div>
+        <div class="text-xs font-semibold uppercase opacity-60">Simulation Actions</div>
+      </div>
+      <div class="space-y-4">
+        <div class="flex gap-3 items-end flex-wrap">
+          <div>
+            <label class="text-[11px] opacity-50 block mb-1">Starting Balance ($)</label>
+            <input type="number" id="sim-balance" value="100" class="w-28">
+          </div>
+          <button onclick="doAction('start_sim')" class="btn btn-green">Start Sim</button>
+          <button onclick="doAction('reset_sim')" class="btn btn-red">Reset Sim</button>
+        </div>
+        <div class="stat-box">
+          <div class="text-[11px] opacity-50 mb-1">Quick Actions</div>
+          <div class="flex gap-2 flex-wrap justify-center">
+            <button onclick="doAction('evaluate')" class="btn btn-amber text-xs">Evaluate All</button>
+            <button onclick="doAction('predict')" class="btn btn-green text-xs">Predict Now</button>
+          </div>
+        </div>
+        <div id="action-result" class="text-sm hidden"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let equityChart, featuresChart, mcChart, priceChart;
+let allTrades = [];
+const darkMode = localStorage.getItem('theme') !== 'light';
+
+function applyTheme() {
+  document.documentElement.classList.toggle('dark', darkMode);
+  document.documentElement.classList.toggle('light', !darkMode);
+  document.getElementById('theme-btn').textContent = darkMode ? '☀️' : '🌙';
+}
+function toggleTheme() { localStorage.setItem('theme', darkMode ? 'light' : 'dark'); location.reload(); }
+
+async function fetchJSON(url) {
+  try { const r = await fetch(url); return r.ok ? await r.json() : null; } catch { return null; }
+}
+function fmt$(v) { return v != null ? '$' + Number(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : 'N/A'; }
+function fmtPct(v,d=1) { return v != null ? Number(v).toFixed(d)+'%' : 'N/A'; }
+
+function showToast(msg, ok=true) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast ' + (ok ? 'toast-ok' : 'toast-err') + ' show';
+  setTimeout(() => t.classList.remove('show'), 4000);
+}
+
+async function refreshStatus() {
+  const d = await fetchJSON('/api/status');
+  if (!d) return;
+  const bs = document.getElementById('bot-status');
+  bs.innerHTML = `<span class="live-dot ${d.bot_alive ? 'dot-alive' : 'dot-dead'}"></span>${d.bot_alive ? 'ALIVE' : 'DEAD'}`;
+  bs.className = 'badge ' + (d.bot_alive ? 'badge-green' : 'badge-red');
+  if (d.live_price) {
+    const el = document.getElementById('live-price');
+    el.textContent = fmt$(d.live_price.price);
+    el.className = 'font-bold font-mono ' + (d.live_price.change > 0 ? 'text-green-400' : d.live_price.change < 0 ? 'text-red-400' : '');
+  }
+  document.getElementById('heartbeat').textContent = d.heartbeat || 'N/A';
+  document.getElementById('data-age').textContent = d.data_age_days >= 0 ? d.last_data_date + ' (' + d.data_age_days + 'd)' : 'N/A';
+}
+
+async function refreshOverview() {
+  const d = await fetchJSON('/api/overview');
+  if (!d) return;
+  document.getElementById('balance').textContent = fmt$(d.balance);
+  const pnlEl = document.getElementById('pnl');
+  pnlEl.textContent = `${fmt$(d.pnl)} (${fmtPct(d.return_pct)})`;
+  pnlEl.className = 'text-xs ' + (d.pnl >= 0 ? 'text-green-400' : 'text-red-400');
+  document.getElementById('win-rate').textContent = fmtPct(d.win_rate);
+  document.getElementById('trade-count').textContent = `${d.total_trades} trades (${d.wins}W / ${d.losses}L)`;
+  const mrEl = document.getElementById('monthly-return');
+  mrEl.textContent = fmtPct(d.monthly_return);
+  mrEl.className = 'text-2xl font-bold ' + (d.monthly_return >= 0 ? 'text-green-400' : 'text-red-400');
+  document.getElementById('active-count').textContent = `${d.daily_pending} daily, ${d.fourh_pending} 4H active`;
+}
+
+async function refreshSignals() {
+  const d = await fetchJSON('/api/signals');
+  if (!d) return;
+  function renderSignal(sig) {
+    if (!sig) return '<div class="opacity-40 text-sm">No signal</div>';
+    const dir = sig.predicted_direction || 'N/A';
+    const conf = sig.confidence || 0;
+    const entry = sig.entry_realtime || sig.price;
+    const dirColor = dir.includes('BUY') ? 'badge-green' : dir.includes('SELL') ? 'badge-red' : 'badge-gray';
+    return `
+      <div class="flex items-center gap-3 mb-3">
+        <span class="badge ${dirColor}" style="font-size:13px;padding:4px 12px">${dir}</span>
+        <span class="font-mono font-bold">${fmtPct(conf*100)}</span>
+      </div>
+      <div class="grid grid-cols-4 gap-3">
+        <div class="stat-box"><div class="text-[10px] opacity-50">Entry</div><div class="font-bold font-mono text-sm">${fmt$(entry)}</div></div>
+        <div class="stat-box"><div class="text-[10px] opacity-50">SL</div><div class="font-bold font-mono text-sm text-red-400">${fmt$(sig.sl)}</div></div>
+        <div class="stat-box"><div class="text-[10px] opacity-50">TP1</div><div class="font-bold font-mono text-sm text-green-400">${fmt$(sig.tp1)}</div></div>
+        <div class="stat-box"><div class="text-[10px] opacity-50">TP2</div><div class="font-bold font-mono text-sm text-green-400">${fmt$(sig.tp2)}</div></div>
+      </div>
+      <div class="text-[10px] opacity-40 mt-2">${sig.model_version || ''} | Target: ${sig.target_date || 'N/A'}</div>`;
+  }
+  document.getElementById('signal-daily').innerHTML = renderSignal(d.daily);
+  document.getElementById('signal-4h').innerHTML = renderSignal(d.fourh);
+  if (d.regime) {
+    const r = d.regime;
+    document.getElementById('adx-info').textContent = `ADX: ${r.adx} | Daily: ${r.daily_trend > 0 ? 'BULL' : r.daily_trend < 0 ? 'BEAR' : 'FLAT'}`;
+  }
+}
+
+async function refreshRisk() {
+  const d = await fetchJSON('/api/risk');
+  if (!d) return;
+  const rc = {low:'text-blue-400',normal:'text-green-400',high:'text-yellow-400',extreme:'text-red-400'};
+  document.getElementById('regime').textContent = d.volatility_regime.toUpperCase();
+  document.getElementById('regime').className = 'text-2xl font-bold ' + (rc[d.volatility_regime]||'text-gray-400');
+
+  const ddPct = Math.min(d.drawdown_pct / d.drawdown_limit * 100, 100);
+  document.getElementById('risk-panel').innerHTML = `
+    <div class="flex justify-between text-sm"><span>Drawdown</span><span class="font-mono ${d.drawdown_ok?'text-green-400':'text-red-400'}">${fmtPct(d.drawdown_pct)} / ${fmtPct(d.drawdown_limit)}</span></div>
+    <div class="progress-track"><div class="progress-fill ${d.drawdown_ok?'bg-green-500':'bg-red-500'}" style="width:${ddPct}%"></div></div>
+    <div class="flex justify-between text-sm"><span>Weekly P&L</span><span class="font-mono ${d.weekly_ok?'text-green-400':'text-red-400'}">${fmt$(d.weekly_pnl)}</span></div>
+    <div class="flex justify-between text-sm"><span>Consecutive Losses</span><span class="font-mono ${d.consecutive_losses<2?'text-green-400':'text-red-400'}">${d.consecutive_losses} / ${d.cooldown_limit}</span></div>
+    <div class="flex justify-between text-sm"><span>Active Positions</span><span class="font-mono">${d.current_positions} / ${d.max_concurrent}</span></div>
+  `;
+}
+
+async function refreshModel() {
+  const d = await fetchJSON('/api/model');
+  if (!d) return;
+  let html = '';
+  for (const [tf, m] of Object.entries(d)) {
+    if (!m) { html += `<div class="text-sm opacity-40">${tf}: No model</div>`; continue; }
+    html += `
+      <div class="mb-3 pb-3" style="border-bottom:1px solid rgba(255,255,255,0.06)">
+        <div class="flex justify-between items-center mb-2"><span class="font-bold uppercase text-sm">${tf}</span><span class="badge badge-purple">${m.version}</span></div>
+        <div class="grid grid-cols-3 gap-2">
+          <div class="stat-box"><div class="text-[10px] opacity-50">Accuracy</div><div class="font-bold text-sm">${fmtPct(m.test_acc)}</div></div>
+          <div class="stat-box"><div class="text-[10px] opacity-50">OOT</div><div class="font-bold text-sm">${m.oot_acc ? fmtPct(m.oot_acc) : 'N/A'}</div></div>
+          <div class="stat-box"><div class="text-[10px] opacity-50">F1</div><div class="font-bold text-sm">${fmtPct(m.f1)}</div></div>
+        </div>
+        <div class="text-[10px] opacity-40 mt-2">${m.features} features | ${m.train_samples} samples | Thresh: ${m.threshold} | ${m.train_date}</div>
+      </div>`;
+  }
+  document.getElementById('model-panel').innerHTML = html;
+}
+
+async function refreshTrades() { allTrades = await fetchJSON('/api/trades') || []; renderTrades(); }
+
+function renderTrades() {
+  const f = document.getElementById('trade-filter').value;
+  const trades = f === 'all' ? allTrades : allTrades.filter(t => t.timeframe === f);
+  document.getElementById('trades-body').innerHTML = trades.slice(0,50).map(t => {
+    const dc = t.direction?.includes('BUY') ? 'text-green-400' : t.direction?.includes('SELL') ? 'text-red-400' : 'text-gray-400';
+    const oc = t.outcome === 'WIN' ? 'text-green-400' : t.outcome === 'LOSS' ? 'text-red-400' : 'text-gray-500';
+    const pc = t.result_pct > 0 ? 'text-green-400' : t.result_pct < 0 ? 'text-red-400' : '';
+    return `<tr class="table-row text-xs">
+      <td class="p-2 font-mono opacity-60">#${t.id}</td>
+      <td class="p-2"><span class="badge ${t.timeframe==='4H'?'badge-blue':'badge-amber'}">${t.timeframe}</span></td>
+      <td class="p-2 font-mono opacity-60">${(t.date||'').slice(0,16)}</td>
+      <td class="p-2 font-bold ${dc}">${t.direction||'-'}</td>
+      <td class="p-2 font-mono">${t.confidence ? fmtPct(t.confidence*100) : '-'}</td>
+      <td class="p-2 font-bold ${oc}">${t.outcome||'pending'}</td>
+      <td class="p-2 opacity-50">${t.outcome_detail||'-'}</td>
+      <td class="p-2 font-mono font-bold ${pc}">${t.result_pct!=null?(t.result_pct>0?'+':'')+t.result_pct.toFixed(2)+'%':'-'}</td>
+      <td class="p-2 font-mono opacity-40">${t.sl?fmt$(t.sl):'-'}</td>
+      <td class="p-2 font-mono opacity-40">${t.tp1?fmt$(t.tp1):'-'}</td>
+      <td class="p-2 font-mono opacity-40">${t.tp2?fmt$(t.tp2):'-'}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function refreshEquity() {
+  const d = await fetchJSON('/api/equity');
+  if (!d?.points?.length) return;
+  const gc = darkMode ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.05)';
+  const tc = darkMode ? '#64748b' : '#94a3b8';
+  if (equityChart) equityChart.destroy();
+  equityChart = new Chart(document.getElementById('equity-chart'), {
+    type:'line', data:{ labels:d.points.map(p=>p.date), datasets:[{
+      data:d.points.map(p=>p.balance), borderColor:'#3b82f6', backgroundColor:'rgba(59,130,246,0.08)',
+      fill:true, tension:0.4, pointRadius:2, borderWidth:2
+    }]}, options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}},
+      scales:{ x:{grid:{color:gc},ticks:{color:tc,maxTicksLimit:8}}, y:{grid:{color:gc},ticks:{color:tc}} }}
+  });
+}
+
+async function refreshFeatures() {
+  const d = await fetchJSON('/api/features');
+  if (!d?.features?.length) return;
+  const gc = darkMode ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.05)';
+  const tc = darkMode ? '#64748b' : '#94a3b8';
+  if (featuresChart) featuresChart.destroy();
+  featuresChart = new Chart(document.getElementById('features-chart'), {
+    type:'bar', data:{ labels:d.features.map(f=>f.name), datasets:[{
+      data:d.features.map(f=>f.importance),
+      backgroundColor:d.features.map((_,i) => `hsl(${270-i*8}, 70%, ${55+i}%)`),
+      borderRadius:6
+    }]}, options:{ responsive:true, maintainAspectRatio:false, indexAxis:'y',
+      plugins:{legend:{display:false}}, scales:{ x:{grid:{color:gc},ticks:{color:tc}}, y:{grid:{display:false},ticks:{color:tc,font:{size:10}}} }}
+  });
+}
+
+async function refreshMonteCarlo() {
+  const d = await fetchJSON('/api/montecarlo');
+  if (!d) { document.getElementById('mc-stats').innerHTML = '<span class="opacity-40 text-sm">Need 20+ trades</span>'; return; }
+  document.getElementById('mc-stats').innerHTML = `
+    <div class="grid grid-cols-2 gap-2">
+      <div class="stat-box"><div class="text-[10px] opacity-50">Median Return</div><div class="font-bold ${d.median_return>0?'text-green-400':'text-red-400'}">${fmtPct(d.median_return*100)}</div></div>
+      <div class="stat-box"><div class="text-[10px] opacity-50">Prob of Profit</div><div class="font-bold text-green-400">${fmtPct(d.prob_profit*100)}</div></div>
+      <div class="stat-box"><div class="text-[10px] opacity-50">5th-95th pctl</div><div class="font-bold text-xs">${fmtPct(d.p5_return*100)} ~ ${fmtPct(d.p95_return*100)}</div></div>
+      <div class="stat-box"><div class="text-[10px] opacity-50">Prob of Ruin</div><div class="font-bold ${d.prob_ruin>0.05?'text-red-400':'text-green-400'}">${fmtPct(d.prob_ruin*100)}</div></div>
+    </div>`;
+  const gc = darkMode ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.05)';
+  const tc = darkMode ? '#64748b' : '#94a3b8';
+  if (mcChart) mcChart.destroy();
+  mcChart = new Chart(document.getElementById('mc-chart'), {
+    type:'bar', data:{ labels:['5th','25th','Median','75th','95th'], datasets:[{
+      data:[d.p5_return*100,(d.median_return-0.05)*100,d.median_return*100,(d.median_return+0.05)*100,d.p95_return*100],
+      backgroundColor:['#ef4444','#f59e0b','#22c55e','#22c55e','#22c55e'], borderRadius:6
+    }]}, options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}},
+      scales:{ x:{grid:{display:false},ticks:{color:tc}}, y:{grid:{color:gc},ticks:{color:tc,callback:v=>v+'%'}} }}
+  });
+}
+
+async function refreshMacro() {
+  const d = await fetchJSON('/api/macro');
+  if (!d) return;
+  const colors = ['from-blue-500/10 to-blue-600/5','from-purple-500/10 to-purple-600/5','from-amber-500/10 to-amber-600/5',
+    'from-gray-500/10 to-gray-600/5','from-orange-500/10 to-orange-600/5','from-cyan-500/10 to-cyan-600/5',
+    'from-green-500/10 to-green-600/5','from-red-500/10 to-red-600/5','from-pink-500/10 to-pink-600/5'];
+  document.getElementById('macro-grid').innerHTML = d.map((m,i) => `
+    <div class="macro-chip bg-gradient-to-br ${colors[i%colors.length]}">
+      <div class="text-[10px] opacity-50 font-semibold">${m.name}</div>
+      <div class="font-bold font-mono text-sm mt-1">${m.value.toLocaleString()}</div>
+      <div class="text-[11px] font-mono font-bold ${m.change>=0?'text-green-400':'text-red-400'}">${m.change>=0?'+':''}${m.change_pct}%</div>
+    </div>
+  `).join('');
+}
+
+async function refreshLogs() {
+  const d = await fetchJSON('/api/logs');
+  if (!d) return;
+  document.getElementById('log-viewer').innerHTML = d.map(l =>
+    `<div class="log-line log-${l.level}">${l.text}</div>`
+  ).join('');
+  const el = document.getElementById('log-viewer');
+  el.scrollTop = el.scrollHeight;
+}
+
+async function doAction(action) {
+  const body = { action };
+  if (action === 'start_sim') body.balance = document.getElementById('sim-balance').value;
+  showToast(`Running ${action}...`, true);
+  try {
+    const r = await fetch('/api/action', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+    const result = await r.json();
+    showToast(result.ok ? `✅ ${result.output}` : `❌ ${result.error||result.output}`, result.ok);
+    if (result.ok) setTimeout(() => refreshAll(), 2000);
+  } catch (e) { showToast(`❌ ${e.message}`, false); }
+}
+
+async function loadPriceChart(days) {
+  // Highlight active button
+  [30,90,180,365].forEach(d => {
+    const btn = document.getElementById('btn-'+d+'d');
+    if (btn) { btn.style.background = d === days ? 'rgba(245,158,11,0.3)' : ''; btn.style.color = d === days ? '#fbbf24' : ''; }
+  });
+
+  const d = await fetchJSON('/api/price_history?days=' + days);
+  if (!d?.points?.length) return;
+
+  const points = d.points;
+  const labels = points.map(p => p.date);
+  const closes = points.map(p => p.close);
+  const highs = points.map(p => p.high);
+  const lows = points.map(p => p.low);
+
+  // Calculate EMA20 and EMA50
+  function ema(data, period) {
+    const k = 2 / (period + 1);
+    const result = [data[0]];
+    for (let i = 1; i < data.length; i++) result.push(data[i] * k + result[i-1] * (1-k));
+    return result;
+  }
+  const ema20 = ema(closes, 20);
+  const ema50 = ema(closes, 50);
+
+  // Bollinger Bands (20,2)
+  const bbMid = closes.map((_, i) => {
+    if (i < 19) return null;
+    const slice = closes.slice(i-19, i+1);
+    return slice.reduce((a,b) => a+b, 0) / 20;
+  });
+  const bbStd = closes.map((_, i) => {
+    if (i < 19) return null;
+    const slice = closes.slice(i-19, i+1);
+    const mean = slice.reduce((a,b) => a+b, 0) / 20;
+    return Math.sqrt(slice.reduce((a,b) => a + (b-mean)**2, 0) / 20);
+  });
+  const bbUpper = bbMid.map((m, i) => m != null ? m + 2 * bbStd[i] : null);
+  const bbLower = bbMid.map((m, i) => m != null ? m - 2 * bbStd[i] : null);
+
+  // Chart colors
+  const gc = darkMode ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.05)';
+  const tc = darkMode ? '#64748b' : '#94a3b8';
+
+  // Highlight buttons
+  document.getElementById('chart-price').textContent = fmt$(closes[closes.length-1]);
+
+  if (priceChart) priceChart.destroy();
+  priceChart = new Chart(document.getElementById('price-chart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Close',
+          data: closes,
+          borderColor: '#f59e0b',
+          backgroundColor: 'rgba(245,158,11,0.05)',
+          fill: false,
+          tension: 0.1,
+          pointRadius: 0,
+          borderWidth: 2,
+          order: 1,
+        },
+        {
+          label: 'EMA 20',
+          data: ema20,
+          borderColor: '#3b82f6',
+          fill: false,
+          tension: 0.3,
+          pointRadius: 0,
+          borderWidth: 1.5,
+          borderDash: [4, 2],
+          order: 2,
+        },
+        {
+          label: 'EMA 50',
+          data: ema50,
+          borderColor: '#a855f7',
+          fill: false,
+          tension: 0.3,
+          pointRadius: 0,
+          borderWidth: 1.5,
+          borderDash: [4, 2],
+          order: 3,
+        },
+        {
+          label: 'BB Upper',
+          data: bbUpper,
+          borderColor: 'rgba(34,197,94,0.3)',
+          fill: false,
+          tension: 0.3,
+          pointRadius: 0,
+          borderWidth: 1,
+          borderDash: [2, 4],
+          order: 4,
+        },
+        {
+          label: 'BB Lower',
+          data: bbLower,
+          borderColor: 'rgba(34,197,94,0.3)',
+          fill: '-1',
+          backgroundColor: 'rgba(34,197,94,0.03)',
+          tension: 0.3,
+          pointRadius: 0,
+          borderWidth: 1,
+          borderDash: [2, 4],
+          order: 5,
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          display: true,
+          position: 'top',
+          labels: { color: tc, boxWidth: 12, padding: 12, font: { size: 10 } }
+        },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: $${ctx.parsed.y.toFixed(2)}`
+          }
+        }
+      },
+      scales: {
+        x: { grid: { color: gc }, ticks: { color: tc, maxTicksLimit: 10, font: { size: 10 } } },
+        y: { grid: { color: gc }, ticks: { color: tc, callback: v => '$' + v.toLocaleString() } },
+      }
+    }
+  });
+
+  // Show technical levels
+  if (d.levels) {
+    const l = d.levels;
+    document.getElementById('chart-levels').innerHTML = `
+      <span>RSI: <b>${l.rsi?.toFixed(1)}</b></span>
+      <span>ATR: <b>$${l.atr?.toFixed(2)}</b></span>
+      <span>EMA20: <b>$${l.ema20?.toFixed(2)}</b></span>
+      <span>EMA50: <b>$${l.ema50?.toFixed(2)}</b></span>
+      <span>BB Upper: <b>$${l.bb_upper?.toFixed(2)}</b></span>
+      <span>BB Lower: <b>$${l.bb_lower?.toFixed(2)}</b></span>
+      <span>Swing H: <b>$${l.swing_high?.toFixed(2)}</b></span>
+      <span>Swing L: <b>$${l.swing_low?.toFixed(2)}</b></span>
+    `;
+  }
+}
+
+async function refreshAll() {
+  await Promise.all([refreshStatus(), refreshOverview(), refreshSignals(), refreshRisk(),
+    refreshModel(), refreshTrades(), refreshEquity(), refreshFeatures(), refreshMonteCarlo(), refreshMacro(), refreshLogs(), loadPriceChart(90)]);
+}
+
+applyTheme();
+refreshAll();
+setInterval(refreshAll, 30000);
+</script>
+</body>
+</html>

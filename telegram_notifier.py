@@ -4,17 +4,55 @@ Reads credentials from Hermes Agent .env, sends via Telegram Bot API.
 Uses shared trading.py for levels/TP/SL.
 """
 import os, re, json, time, sys, threading, subprocess, urllib.request, urllib.error, ssl
-ssl._create_default_https_context = ssl._create_unverified_context
 from datetime import datetime
 import yfinance as yf
 import trading
 import simulation as sim
 
-HERMES_ENV = os.path.join(os.environ.get("LOCALAPPDATA", ""), "hermes", ".env")
+HERMES_ENV = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 ENTRY_ARROW = "▶"  # indicator for entry line
+_OFFSET_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tg_offset")
+_retrain_lock = threading.Lock()
+_env_cache = None
+_env_cache_mtime = 0
+
+
+def _ssl_ctx():
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+def _urlopen(req, timeout=15):
+    return urllib.request.urlopen(req, context=_ssl_ctx(), timeout=timeout)
+
+
+def _load_offset():
+    try:
+        with open(_OFFSET_FILE) as f:
+            return int(f.read().strip())
+    except Exception:
+        return 0
+
+
+def _save_offset(offset):
+    try:
+        with open(_OFFSET_FILE, "w") as f:
+            f.write(str(offset))
+    except Exception:
+        pass
 
 
 def _read_env(path):
+    """Read .env file with caching (re-read only if file modified)."""
+    global _env_cache, _env_cache_mtime
+    try:
+        mtime = os.path.getmtime(path)
+        if _env_cache is not None and mtime == _env_cache_mtime:
+            return _env_cache
+    except OSError:
+        return {}
     creds = {}
     if not os.path.exists(path):
         return creds
@@ -26,6 +64,8 @@ def _read_env(path):
             m = re.match(r'^(TELEGRAM_\w+)=["\']?(.*?)["\']?$', line)
             if m:
                 creds[m.group(1)] = m.group(2).strip()
+    _env_cache = creds
+    _env_cache_mtime = mtime
     return creds
 
 
@@ -36,7 +76,7 @@ def get_realtime_price():
         try:
             url = "https://www.kitco.com/gold-price-today-usa/"
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with _urlopen(req, timeout=10) as resp:
                 html = resp.read().decode("utf-8", errors="ignore")
             # Multiple extraction strategies
             gold = None
@@ -130,7 +170,7 @@ def send_signal(prediction_id, direction, confidence, daily_price, target_date, 
     req = urllib.request.Request(url, data=payload, method="POST",
         headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with _urlopen(req, timeout=15) as resp:
             result = json.loads(resp.read())
             if result.get("ok"):
                 print(f"[TELEGRAM] Signal #{prediction_id} terkirim via real-time price ${entry:.2f}")
@@ -157,7 +197,7 @@ def _send_telegram(msg, bot_token=None, chat_id=None):
     req = urllib.request.Request(url, data=payload, method="POST",
         headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with _urlopen(req, timeout=15) as resp:
             return json.loads(resp.read()).get("ok", False)
     except Exception:
         return False
@@ -197,7 +237,7 @@ def send_outcome_notification(prediction_id, timeframe, direction, entry, outcom
     sim_line = ""
     pnl_display = None
     try:
-        r = sim.record_trade(prediction_id, timeframe, direction, entry, sl, tp1, outcome, pct)
+        r = sim.record_trade(prediction_id, timeframe, direction, entry, sl, tp1, outcome, pct, tp2=tp2, outcome_detail=detail)
         if r:
             sim_line = f"\n  Sim: {r['lot']} lot | P&L: ${r['pnl']:+.2f} | Bal: ${r['balance_after']:.2f}"
             pnl_display = r['pnl']
@@ -281,195 +321,204 @@ def _retrain_worker():
                 url = f"https://api.telegram.org/bot{_retrain_result['token']}/sendMessage"
                 req = urllib.request.Request(url, data=payload, method="POST",
                     headers={"Content-Type": "application/json"})
-                urllib.request.urlopen(req, timeout=10)
+                _urlopen(req, timeout=10)
             except Exception:
                 pass
 
 
+def _send_reply(token, chat_id, reply):
+    """Send a reply message with keyboard to Telegram. Returns ok bool."""
+    keyboard = {
+        "keyboard": [["/bal", "/price"], ["/start 100"], ["/retrain", "/info"], ["/reset"]],
+        "resize_keyboard": True,
+        "one_time_keyboard": False
+    }
+    url_send = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = json.dumps({
+        "chat_id": chat_id, "text": reply,
+        "parse_mode": "HTML",
+        "reply_markup": keyboard
+    }).encode()
+    try:
+        r = _urlopen(urllib.request.Request(url_send, data=payload,
+            method="POST", headers={"Content-Type": "application/json"}), timeout=10)
+        return json.loads(r.read()).get("ok", False)
+    except Exception:
+        return False
+
+
+def _handle_command(text, chat_id, token):
+    """Process a single command text. Returns reply string or None."""
+    reply = None
+    if text.startswith("/start"):
+        parts = text.split()
+        try:
+            amount = float(parts[1])
+        except Exception:
+            amount = 100
+        sim.start_sim(amount)
+        s = sim.get_sim_summary()
+        bal_str = f"${s['balance']:.2f}" if s else f"${amount:.2f}"
+        reply = f"✅ Simulasi dimulai dengan ${amount:.2f}\n  Balance: {bal_str}"
+    elif text == "/bal":
+        s = sim.get_sim_summary()
+        if s:
+            reply = (f"💰 <b>Simulation</b>\n"
+                     f"  Balance : ${s['balance']:.2f}\n"
+                     f"  P&L     : {s['pnl']:+.2f} ({s['return_pct']:+.2f}%)\n"
+                     f"  Trades  : {s['trades']} ({s['wins']}W / {s['losses']}L)")
+        else:
+            reply = "❌ Belum ada simulasi. Ketik /start 100"
+    elif text == "/reset":
+        sim.reset_sim()
+        reply = "🔄 Simulasi direset."
+    elif text == "/price":
+        live = get_realtime_price()
+        if live and live.get("price"):
+            reply = (f"💰 <b>XAUUSD Real-time Price</b>\n"
+                     f"  Price : ${live['price']:.2f}\n"
+                     f"  Source: {live['source']}")
+        else:
+            reply = "❌ Gagal ambil harga real-time"
+    elif text == "/info":
+        try:
+            import sqlite3
+            this_month = datetime.now().strftime("%Y-%m")
+            conn = sqlite3.connect(trading.DB_FILE)
+            try:
+                c = conn.cursor()
+                daily_eval = c.execute(
+                    "SELECT outcome, COUNT(*) FROM predictions WHERE date LIKE ? AND outcome IN ('WIN','LOSS') GROUP BY outcome",
+                    (f"{this_month}%",)).fetchall()
+                fourh_eval = c.execute(
+                    "SELECT outcome, COUNT(*) FROM predictions_4h WHERE date LIKE ? AND outcome IN ('WIN','LOSS') GROUP BY outcome",
+                    (f"{this_month}%",)).fetchall()
+                live = get_realtime_price()
+                curr = live["price"] if live and live.get("price") else None
+                daily_active = c.execute(
+                    "SELECT id, price, predicted_direction, sl, tp1, tp2, entry_realtime FROM predictions WHERE date LIKE ? AND outcome IS NULL",
+                    (f"{this_month}%",)).fetchall()
+                fourh_active = c.execute(
+                    "SELECT id, predicted_direction, entry_realtime, sl, tp1 FROM predictions_4h WHERE date LIKE ? AND outcome IS NULL",
+                    (f"{this_month}%",)).fetchall()
+                d_hit_sl = d_hit_tp = 0
+                for row in daily_active:
+                    _, price, direction, sl, tp1, tp2, entry_rt = row
+                    entry = entry_rt or price
+                    if not sl or not curr: continue
+                    is_buy = "BUY" in (direction or "")
+                    if (is_buy and curr <= sl) or (not is_buy and curr >= sl):
+                        d_hit_sl += 1
+                    elif tp1 and ((is_buy and curr >= tp1) or (not is_buy and curr <= tp1)):
+                        d_hit_tp += 1
+                f_hit_sl = f_hit_tp = 0
+                for row in fourh_active:
+                    _, direction, entry_rt, sl, tp1 = row
+                    if not sl or not curr or not entry_rt: continue
+                    is_buy = direction == "BUY"
+                    if (is_buy and curr <= sl) or (not is_buy and curr >= sl):
+                        f_hit_sl += 1
+                    elif tp1 and ((is_buy and curr >= tp1) or (not is_buy and curr <= tp1)):
+                        f_hit_tp += 1
+                lines = [f"📊 <b>Monthly — {this_month}</b>"]
+                d_w = sum(cnt for o, cnt in daily_eval if o == "WIN")
+                d_l = sum(cnt for o, cnt in daily_eval if o == "LOSS")
+                f_w = sum(cnt for o, cnt in fourh_eval if o == "WIN")
+                f_l = sum(cnt for o, cnt in fourh_eval if o == "LOSS")
+                total_w = d_w + f_w
+                total_l = d_l + f_l
+                evaluated = total_w + total_l
+                if evaluated > 0:
+                    lines.append(f"  Evaluated: {total_w}W / {total_l}L ({total_w/evaluated*100:.0f}%)")
+                total_active = len(daily_active) + len(fourh_active)
+                total_hit_sl = d_hit_sl + f_hit_sl
+                total_hit_tp = d_hit_tp + f_hit_tp
+                lines.append(f"  Active: {total_active} pending")
+                if total_hit_sl > 0 or total_hit_tp > 0:
+                    lines.append(f"  Real-time:")
+                    if total_hit_sl > 0: lines.append(f"    SL hit : {total_hit_sl}")
+                    if total_hit_tp > 0: lines.append(f"    TP hit : {total_hit_tp}")
+                if curr:
+                    lines.append(f"  Current: ${curr:.2f}")
+                closed = c.execute("""
+                    SELECT id, predicted_direction, outcome, outcome_detail, result_pct, sl, tp1, tp2
+                    FROM predictions WHERE outcome IS NOT NULL AND date LIKE ?
+                    ORDER BY id DESC LIMIT 5
+                """, (f"{this_month}%",)).fetchall()
+                if closed:
+                    lines.append("\n  Closed Daily:")
+                    for row in closed:
+                        pid, direc, outcome, detail, pct, sl_, tp1_, tp2_ = row
+                        exit_p = {"SL_HIT": sl_, "TP1_HIT": tp1_, "TP2_HIT": tp2_}.get(detail, "?")
+                        icon = "+" if outcome == "WIN" else "-"
+                        exit_str = f" @ ${exit_p:.2f}" if isinstance(exit_p, float) else ""
+                        short_dir = (direc or "?")[:4]
+                        lines.append(f"    #{pid} {short_dir} {icon}{abs(pct):.1f}%{exit_str}")
+                closed4 = c.execute("""
+                    SELECT id, predicted_direction, outcome, outcome_detail, result_pct, sl, tp1
+                    FROM predictions_4h WHERE outcome IS NOT NULL AND date LIKE ?
+                    ORDER BY id DESC LIMIT 5
+                """, (f"{this_month}%",)).fetchall()
+                if closed4:
+                    lines.append("\n  Closed 4H:")
+                    for row in closed4:
+                        pid, direc, outcome, detail, pct, sl_, tp1_ = row
+                        exit_p = {"SL_HIT": sl_, "TP1_HIT": tp1_}.get(detail, "?")
+                        icon = "+" if outcome == "WIN" else "-"
+                        exit_str = f" @ ${exit_p:.2f}" if isinstance(exit_p, float) else ""
+                        short_dir = (direc or "?")[:4]
+                        lines.append(f"    #{pid} {short_dir} {icon}{abs(pct):.1f}%{exit_str}")
+                reply = "\n".join(lines)
+            finally:
+                conn.close()
+        except Exception as e:
+            reply = f"❌ Info error: {e}"
+    elif text == "/retrain":
+        with _retrain_lock:
+            if _retrain_result["running"]:
+                reply = "⏳ Retrain sedang berjalan..."
+            else:
+                _retrain_result["running"] = True
+                _retrain_result["token"] = token
+                _retrain_result["chat_id"] = chat_id
+                t = threading.Thread(target=_retrain_worker, daemon=True)
+                t.start()
+                reply = "⏳ Retrain dimulai, akan dikirim notifikasi setelah selesai..."
+    return reply
+
+
 def process_commands():
-    """Check Telegram for simulation commands and process them"""
+    """Check Telegram for new commands and process them with persistent offset."""
     creds = _read_env(HERMES_ENV)
     token = creds.get("TELEGRAM_TRADING_BOT") or creds.get("TELEGRAM_BOT_TOKEN")
     if not token:
         return
-    url = f"https://api.telegram.org/bot{token}/getUpdates"
+    offset = _load_offset()
+    url = f"https://api.telegram.org/bot{token}/getUpdates?offset={offset}&timeout=10"
     try:
         req = urllib.request.Request(url)
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with _urlopen(req, timeout=8) as resp:
             data = json.loads(resp.read())
         if not data.get("ok"):
             return
-        for update in data["result"]:
+        updates = data.get("result", [])
+        for update in updates:
+            update_id = update.get("update_id", 0)
             msg = update.get("message", {})
             text = (msg.get("text") or "").strip()
             chat_id = str(msg.get("chat", {}).get("id", ""))
-            if not text or not chat_id:
-                continue
-            reply = None
-            if text.startswith("/start"):
-                parts = text.split()
+            if text and chat_id:
                 try:
-                    amount = float(parts[1])
-                except Exception:
-                    amount = 100
-                sim.start_sim(amount)
-                s = sim.get_sim_summary()
-                reply = f"✅ Simulasi dimulai dengan ${amount:.2f}\n  Balance: ${s['balance']:.2f}"
-            elif text == "/bal":
-                s = sim.get_sim_summary()
-                if s:
-                    reply = (f"💰 <b>Simulation</b>\n"
-                             f"  Balance : ${s['balance']:.2f}\n"
-                             f"  P&L     : {s['pnl']:+.2f} ({s['return_pct']:+.2f}%)\n"
-                             f"  Trades  : {s['trades']} ({s['wins']}W / {s['losses']}L)")
-                else:
-                    reply = "❌ Belum ada simulasi. Ketik /start 100"
-            elif text == "/reset":
-                sim.reset_sim()
-                reply = "🔄 Simulasi direset."
-            elif text == "/price":
-                live = get_realtime_price()
-                if live:
-                    reply = (f"💰 <b>XAUUSD Real-time Price</b>\n"
-                             f"  Price : ${live['price']:.2f}\n"
-                             f"  Source: {live['source']}")
-                else:
-                    reply = "❌ Gagal ambil harga real-time"
-            elif text == "/info":
-                try:
-                    import sqlite3
-                    this_month = datetime.now().strftime("%Y-%m")
-                    conn = sqlite3.connect(trading.DB_FILE)
-                    c = conn.cursor()
-                    # Evaluated outcomes
-                    daily_eval = c.execute(
-                        "SELECT outcome, COUNT(*) FROM predictions WHERE date LIKE ? AND outcome IN ('WIN','LOSS') GROUP BY outcome",
-                        (f"{this_month}%",)).fetchall()
-                    fourh_eval = c.execute(
-                        "SELECT outcome, COUNT(*) FROM predictions_4h WHERE date LIKE ? AND outcome IN ('WIN','LOSS') GROUP BY outcome",
-                        (f"{this_month}%",)).fetchall()
-                    # Active (unevaluated) — check vs real-time price
-                    live = get_realtime_price()
-                    curr = live["price"] if live else None
-                    daily_active = c.execute(
-                        "SELECT id, price, predicted_direction, sl, tp1, tp2, entry_realtime FROM predictions WHERE date LIKE ? AND outcome IS NULL",
-                        (f"{this_month}%",)).fetchall()
-                    fourh_active = c.execute(
-                        "SELECT id, predicted_direction, entry_realtime, sl, tp1 FROM predictions_4h WHERE date LIKE ? AND outcome IS NULL",
-                        (f"{this_month}%",)).fetchall()
-                    # Count hits
-                    d_hit_sl = d_hit_tp = 0
-                    for r in daily_active:
-                        _, price, direction, sl, tp1, tp2, entry_rt = r
-                        entry = entry_rt or price
-                        if not sl or not curr: continue
-                        is_buy = "BUY" in (direction or "")
-                        if (is_buy and curr <= sl) or (not is_buy and curr >= sl):
-                            d_hit_sl += 1
-                        elif tp1 and ((is_buy and curr >= tp1) or (not is_buy and curr <= tp1)):
-                            d_hit_tp += 1
-                    f_hit_sl = f_hit_tp = 0
-                    for r in fourh_active:
-                        _, direction, entry_rt, sl, tp1 = r
-                        if not sl or not curr or not entry_rt: continue
-                        is_buy = direction == "BUY"
-                        if (is_buy and curr <= sl) or (not is_buy and curr >= sl):
-                            f_hit_sl += 1
-                        elif tp1 and ((is_buy and curr >= tp1) or (not is_buy and curr <= tp1)):
-                            f_hit_tp += 1
-                    # Build reply
-                    lines = [f"📊 <b>Monthly — {this_month}</b>"]
-                    d_w = sum(c for o,c in daily_eval if o=="WIN")
-                    d_l = sum(c for o,c in daily_eval if o=="LOSS")
-                    f_w = sum(c for o,c in fourh_eval if o=="WIN")
-                    f_l = sum(c for o,c in fourh_eval if o=="LOSS")
-                    total_w = d_w + f_w
-                    total_l = d_l + f_l
-                    evaluated = total_w + total_l
-                    if evaluated > 0:
-                        lines.append(f"  Evaluated: {total_w}W / {total_l}L ({total_w/evaluated*100:.0f}%)")
-                    # Active with real-time hits
-                    total_active = len(daily_active) + len(fourh_active)
-                    total_hit_sl = d_hit_sl + f_hit_sl
-                    total_hit_tp = d_hit_tp + f_hit_tp
-                    lines.append(f"  Active: {total_active} pending")
-                    if total_hit_sl > 0 or total_hit_tp > 0:
-                        lines.append(f"  Real-time:")
-                        if total_hit_sl > 0: lines.append(f"    SL hit : {total_hit_sl}")
-                        if total_hit_tp > 0: lines.append(f"    TP hit : {total_hit_tp}")
-                    if curr:
-                        lines.append(f"  Current: ${curr:.2f}")
-                    # Recent closed trades with exit price
-                    c2 = conn.cursor()
-                    closed = c2.execute("""
-                        SELECT id, predicted_direction, outcome, outcome_detail, result_pct, sl, tp1, tp2, date
-                        FROM predictions WHERE outcome IS NOT NULL AND date LIKE ?
-                        ORDER BY id DESC LIMIT 5
-                    """, (f"{this_month}%",)).fetchall()
-                    if closed:
-                        lines.append(f"\n  Closed Daily:")
-                        for r in closed:
-                            pid, direc, outcome, detail, pct, sl, tp1, tp2, d = r
-                            exit_p = {"SL_HIT": sl, "TP1_HIT": tp1, "TP2_HIT": tp2}.get(detail, "?")
-                            icon = "+" if outcome == "WIN" else "-"
-                            exit_str = f" @ ${exit_p:.2f}" if isinstance(exit_p, float) else ""
-                            short_dir = direc[:4] if direc else "?"
-                            lines.append(f"    #{pid} {short_dir} {icon}{abs(pct):.1f}%{exit_str}")
-                    c3 = conn.cursor()
-                    closed4 = c3.execute("""
-                        SELECT id, predicted_direction, outcome, outcome_detail, result_pct, sl, tp1, date
-                        FROM predictions_4h WHERE outcome IS NOT NULL AND date LIKE ?
-                        ORDER BY id DESC LIMIT 5
-                    """, (f"{this_month}%",)).fetchall()
-                    if closed4:
-                        lines.append(f"\n  Closed 4H:")
-                        for r in closed4:
-                            pid, direc, outcome, detail, pct, sl, tp1, d = r
-                            exit_p = {"SL_HIT": sl, "TP1_HIT": tp1}.get(detail, "?")
-                            icon = "+" if outcome == "WIN" else "-"
-                            exit_str = f" @ ${exit_p:.2f}" if isinstance(exit_p, float) else ""
-                            short_dir = direc[:4] if direc else "?"
-                            lines.append(f"    #{pid} {short_dir} {icon}{abs(pct):.1f}%{exit_str}")
-                    conn.close()
-                    reply = "\n".join(lines)
-                except Exception as e:
-                    reply = f"❌ Info error: {e}"
-            elif text == "/retrain":
-                if _retrain_result["running"]:
-                    reply = "⏳ Retrain sedang berjalan..."
-                else:
-                    _retrain_result["running"] = True
-                    _retrain_result["token"] = token
-                    _retrain_result["chat_id"] = chat_id
-                    t = threading.Thread(target=_retrain_worker, daemon=True)
-                    t.start()
-                    reply = "⏳ Retrain dimulai, akan dikirim notifikasi setelah selesai..."
-            if reply:
-                keyboard = {
-                    "keyboard": [["/bal", "/price"], ["/start 100"], ["/retrain", "/info"], ["/reset"]],
-                    "resize_keyboard": True,
-                    "one_time_keyboard": False
-                }
-                url_send = f"https://api.telegram.org/bot{token}/sendMessage"
-                payload = json.dumps({
-                    "chat_id": chat_id, "text": reply,
-                    "parse_mode": "HTML",
-                    "reply_markup": keyboard
-                }).encode()
-                try:
-                    r = urllib.request.urlopen(urllib.request.Request(url_send, data=payload,
-                        method="POST", headers={"Content-Type": "application/json"}), timeout=10)
-                    ok = json.loads(r.read()).get("ok", False)
-                except Exception as send_err:
-                    ok = False
+                    reply = _handle_command(text, chat_id, token)
+                    if reply:
+                        ok = _send_reply(token, chat_id, reply)
+                        with open(os.path.join(trading.BASE_DIR, "poll.log"), "a") as f:
+                            f.write(f"[{datetime.now()}] cmd '{text}' from {chat_id}: reply sent={ok}\n")
+                except Exception as cmd_err:
                     with open(os.path.join(trading.BASE_DIR, "poll.log"), "a") as f:
-                        f.write(f"[{datetime.now()}] send failed: {send_err}\n")
-                with open(os.path.join(trading.BASE_DIR, "poll.log"), "a") as f:
-                    f.write(f"[{datetime.now()}] cmd '{text}' from {chat_id}: reply sent={ok}\n")
-        # Mark all as processed
-        if data["result"]:
-            last_id = data["result"][-1]["update_id"]
-            urllib.request.urlopen(f"https://api.telegram.org/bot{token}/getUpdates?offset={last_id + 1}", timeout=5)
+                        f.write(f"[{datetime.now()}] cmd error '{text}': {cmd_err}\n")
+            # Advance offset after each update so a failing command doesn't replay
+            _save_offset(update_id + 1)
     except Exception as e:
         with open(os.path.join(trading.BASE_DIR, "poll.log"), "a") as f:
             f.write(f"[{datetime.now()}] process_commands error: {e}\n")

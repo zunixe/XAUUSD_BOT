@@ -6,6 +6,7 @@ Chart pattern detection for XAUUSD
 """
 import pandas as pd
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 
 
 def detect_candlestick(df):
@@ -14,7 +15,7 @@ def detect_candlestick(df):
     o, h, l, c = df["Open"], df["High"], df["Low"], df["Close"]
 
     body = abs(c - o)
-    rng = h - l + 1e-10
+    rng = (h - l).clip(lower=1e-10)
     upper = h - np.maximum(o, c)
     lower = np.minimum(o, c) - l
 
@@ -23,22 +24,15 @@ def detect_candlestick(df):
     df["Lower_Wick_Ratio"] = lower / rng
     df["Candle_Color"] = (c > o).astype(int)
 
-    # Doji
-    df["Is_Doji"] = (body / rng < 0.1).astype(int)
+    # Only compute pattern flags where range is meaningful (> $0.10)
+    valid = (h - l) > 0.10
 
-    # Hammer: long lower wick >= 2x body, upper wick < body
-    df["Is_Hammer"] = ((lower >= 2 * body) & (upper < body)).astype(int)
+    df["Is_Doji"] = (valid & (body / rng < 0.1)).astype(int)
+    df["Is_Hammer"] = (valid & (lower >= 2 * body) & (upper < body)).astype(int)
+    df["Is_Shooting_Star"] = (valid & (upper >= 2 * body) & (lower < body)).astype(int)
+    df["Is_Pin_Bar"] = (valid & (np.maximum(upper, lower) >= 3 * body) & (body > 0)).astype(int)
+    df["Is_Marubozu"] = (valid & (upper / rng < 0.05) & (lower / rng < 0.05) & (body / rng > 0.8)).astype(int)
 
-    # Shooting Star: long upper wick >= 2x body, lower wick < body
-    df["Is_Shooting_Star"] = ((upper >= 2 * body) & (lower < body)).astype(int)
-
-    # Pin Bar: max wick >= 3x body
-    df["Is_Pin_Bar"] = ((np.maximum(upper, lower) >= 3 * body) & (body > 0)).astype(int)
-
-    # Marubozu: very small wicks
-    df["Is_Marubozu"] = ((upper / rng < 0.05) & (lower / rng < 0.05) & (body / rng > 0.8)).astype(int)
-
-    # Engulfing
     prev_c = c.shift(1)
     prev_o = o.shift(1)
     df["Is_Bullish_Engulfing"] = (
@@ -47,8 +41,6 @@ def detect_candlestick(df):
     df["Is_Bearish_Engulfing"] = (
         (c < o) & (prev_c > prev_o) & (c < prev_o) & (o > prev_c)
     ).astype(int)
-
-    # Inside Bar
     df["Is_Inside_Bar"] = ((h < h.shift(1)) & (l > l.shift(1))).astype(int)
 
     return df
@@ -72,13 +64,12 @@ def detect_support_resistance(df, lookback=50):
     df["Breakout_Low"] = (c < recent_low.shift(1)).astype(int)
 
     # Touch count (vectorized with sliding window)
-    from numpy.lib.stride_tricks import sliding_window_view
     n = len(df)
     touch_l = np.zeros(n, dtype=int)
     touch_h = np.zeros(n, dtype=int)
     if n > lookback:
-        l_wins = sliding_window_view(l.values[:n-1], lookback)
-        h_wins = sliding_window_view(h.values[:n-1], lookback)
+        l_wins = sliding_window_view(l.values[:n - 1], lookback)
+        h_wins = sliding_window_view(h.values[:n - 1], lookback)
         lo = l.values[lookback:] * 0.997
         hi = l.values[lookback:] * 1.003
         ho = h.values[lookback:] * 0.997
@@ -92,55 +83,86 @@ def detect_support_resistance(df, lookback=50):
 
 
 def detect_double_top_bottom(df, lookback=30, tolerance=0.005):
-    """Detect double top/bottom pattern (binary feature)"""
+    """Detect double top/bottom pattern using vectorized numpy (O(n*k^2) worst case)."""
     df = df.copy()
-    h, l, c = df["High"], df["Low"], df["Close"]
+    h_arr = df["High"].values.astype(float)
+    l_arr = df["Low"].values.astype(float)
+    n = len(df)
 
-    df["Is_Double_Top"] = 0
-    df["Is_Double_Bottom"] = 0
-    h_arr = h.values
-    l_arr = l.values
+    double_top = np.zeros(n, dtype=int)
+    double_bottom = np.zeros(n, dtype=int)
 
-    for i in range(lookback * 2, len(df)):
+    for i in range(lookback * 2, n):
+        window_h = h_arr[i - lookback:i]
+        window_l = l_arr[i - lookback:i]
+        k = len(window_h)
+
+        # Find local peaks in window: h[j] > h[j-1] and h[j] > h[j+1]
+        if k < 3:
+            continue
+        peak_mask = (
+            (window_h[1:-1] > window_h[:-2]) &
+            (window_h[1:-1] > window_h[2:])
+        )
+        peak_indices = np.where(peak_mask)[0] + 1  # offset by 1 due to slicing
+        peak_vals = window_h[peak_indices]
+
+        trough_mask = (
+            (window_l[1:-1] < window_l[:-2]) &
+            (window_l[1:-1] < window_l[2:])
+        )
+        trough_indices = np.where(trough_mask)[0] + 1
+        trough_vals = window_l[trough_indices]
+
         curr_h = h_arr[i]
         curr_l = l_arr[i]
 
-        # Find local peak indices (uses full h_arr with boundary checks matching original)
-        peaks = []
-        for j in range(1, lookback - 1):
-            idx = i - lookback + j
-            if not (h_arr[idx] > h_arr[idx - 1] and h_arr[idx] > h_arr[idx + 1]):
-                continue
-            if idx > i - lookback + 2 and h_arr[idx] <= h_arr[idx - 2]:
-                continue
-            if idx < i - 2 and h_arr[idx] <= h_arr[idx + 2]:
-                continue
-            peaks.append((idx, h_arr[idx]))
+        # Double top: two peaks within tolerance
+        if len(peak_indices) >= 2:
+            for p1 in range(len(peak_indices)):
+                for p2 in range(p1 + 1, len(peak_indices)):
+                    v1, v2 = peak_vals[p1], peak_vals[p2]
+                    if v1 <= 0:
+                        continue
+                    if abs(v1 - v2) / v1 >= tolerance:
+                        continue
+                    idx1, idx2 = peak_indices[p1], peak_indices[p2]
+                    if idx1 >= idx2:
+                        continue
+                    mid_slice = window_l[idx1:idx2 + 1]
+                    if len(mid_slice) == 0:
+                        continue
+                    mid_min = mid_slice.min()
+                    drop_depth = (v1 - mid_min) / v1
+                    if drop_depth > 0.01 and curr_h <= v1:
+                        double_top[i] = 1
+                        break
+                if double_top[i]:
+                    break
 
-        # Check for double top: two peaks within tolerance
-        if len(peaks) >= 2:
-            for p1_idx in range(len(peaks)):
-                for p2_idx in range(p1_idx + 1, len(peaks)):
-                    if abs(peaks[p1_idx][1] - peaks[p2_idx][1]) / peaks[p1_idx][1] < tolerance:
-                        mid_min = l_arr[peaks[p1_idx][0]:peaks[p2_idx][0]].min()
-                        drop_depth = (peaks[p1_idx][1] - mid_min) / peaks[p1_idx][1]
-                        if drop_depth > 0.01 and curr_h <= peaks[p1_idx][1]:
-                            df.loc[df.index[i], "Is_Double_Top"] = 1
+        # Double bottom: two troughs within tolerance
+        if len(trough_indices) >= 2:
+            for t1 in range(len(trough_indices)):
+                for t2 in range(t1 + 1, len(trough_indices)):
+                    v1, v2 = trough_vals[t1], trough_vals[t2]
+                    if v1 <= 0:
+                        continue
+                    if abs(v1 - v2) / v1 >= tolerance:
+                        continue
+                    idx1, idx2 = trough_indices[t1], trough_indices[t2]
+                    if idx1 >= idx2:
+                        continue
+                    mid_slice = window_h[idx1:idx2 + 1]
+                    if len(mid_slice) == 0:
+                        continue
+                    mid_max = mid_slice.max()
+                    rise = (mid_max - v1) / v1
+                    if rise > 0.01 and curr_l >= v1:
+                        double_bottom[i] = 1
+                        break
+                if double_bottom[i]:
+                    break
 
-        # Double Bottom (same logic, for lows)
-        troughs = []
-        for j in range(1, lookback - 1):
-            idx = i - lookback + j
-            if l_arr[idx] < l_arr[idx - 1] and l_arr[idx] < l_arr[idx + 1]:
-                troughs.append((idx, l_arr[idx]))
-
-        if len(troughs) >= 2:
-            for t1_idx in range(len(troughs)):
-                for t2_idx in range(t1_idx + 1, len(troughs)):
-                    if abs(troughs[t1_idx][1] - troughs[t2_idx][1]) / troughs[t1_idx][1] < tolerance:
-                        mid_max = h_arr[troughs[t1_idx][0]:troughs[t2_idx][0]].max()
-                        rise = (mid_max - troughs[t1_idx][1]) / troughs[t1_idx][1]
-                        if rise > 0.01 and curr_l >= troughs[t1_idx][1]:
-                            df.loc[df.index[i], "Is_Double_Bottom"] = 1
-
+    df["Is_Double_Top"] = double_top
+    df["Is_Double_Bottom"] = double_bottom
     return df

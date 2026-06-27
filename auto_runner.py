@@ -1,11 +1,9 @@
 """
-XAUUSD AUTO RUNNER + LEARNING ENGINE
-- Update data + prediksi + catat journal
-- Auto-retrain model dari hasil prediksi sebelumnya
-- Adaptive threshold (naikkin threshold sampe profit konsisten)
-- Target: confidence >= 80% dengan profit konsisten
+XAUUSD AUTO RUNNER + LEARNING ENGINE (V2)
+- 3-class model with regime detection, MTF confirmation, risk management
+- Heartbeat, model monitoring, graceful shutdown, trailing stops
 """
-import sys, os, time, subprocess, argparse, json
+import sys, os, time, subprocess, argparse, json, signal, shutil
 from datetime import datetime, timedelta
 import sqlite3
 import pandas as pd
@@ -18,6 +16,15 @@ import patterns
 
 MODEL_FILE = os.path.join(trading.BASE_DIR, "xauusd_model.pkl")
 LEARNING_LOG = os.path.join(trading.BASE_DIR, "learning.csv")
+_shutdown = False
+
+def _handle_shutdown(signum, frame):
+    global _shutdown
+    log(f"Received signal {signum}, shutting down...")
+    _shutdown = True
+
+signal.signal(signal.SIGTERM, _handle_shutdown)
+signal.signal(signal.SIGINT, _handle_shutdown)
 
 def log(msg):
     t = datetime.now().strftime("%H:%M:%S")
@@ -26,7 +33,7 @@ def log(msg):
         f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
 
 def migrate_db():
-    """Add columns for SL/TP tracking if missing"""
+    """Add columns for SL/TP tracking if missing + DB indexes"""
     conn = sqlite3.connect(trading.DB_FILE)
     c = conn.cursor()
     for col, dtype in [("sl", "REAL"), ("tp1", "REAL"), ("tp2", "REAL"),
@@ -41,6 +48,22 @@ def migrate_db():
         log("DB: added column notified")
     except sqlite3.OperationalError:
         pass
+    # Performance indexes
+    indexes = [
+        "CREATE INDEX IF NOT EXISTS idx_pred_outcome ON predictions(outcome)",
+        "CREATE INDEX IF NOT EXISTS idx_pred_date ON predictions(date)",
+        "CREATE INDEX IF NOT EXISTS idx_pred_notified ON predictions(notified)",
+        "CREATE INDEX IF NOT EXISTS idx_4h_outcome ON predictions_4h(outcome)",
+        "CREATE INDEX IF NOT EXISTS idx_4h_date ON predictions_4h(date)",
+        "CREATE INDEX IF NOT EXISTS idx_sim_active ON simulation(active)",
+        "CREATE INDEX IF NOT EXISTS idx_trades_sim ON sim_trades(sim_id)",
+        "CREATE INDEX IF NOT EXISTS idx_trades_date ON sim_trades(created_at)",
+    ]
+    for sql in indexes:
+        try:
+            c.execute(sql)
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     conn.close()
 
@@ -61,18 +84,26 @@ _FOMC_DATES = [
 ]
 
 def _add_fomc_features(df):
-    """Add FOMC calendar features to dataframe."""
-    fomc_series = pd.Series(0, index=df.index)
-    for d in _FOMC_DATES:
-        if d in df.index:
-            fomc_series.loc[d] = 1
-    df["Is_FOMC_Day"] = fomc_series.values
-    df["Days_To_FOMC"] = np.nan
+    """Add FOMC calendar features to dataframe using bisect for O(n log k)."""
+    import bisect
     fomc_sorted = sorted(_FOMC_DATES)
-    for i, date in enumerate(df.index):
-        future_fomc = [d for d in fomc_sorted if d >= date]
-        if future_fomc:
-            df.loc[date, "Days_To_FOMC"] = (future_fomc[0] - date).days
+    last_fomc = fomc_sorted[-1] if fomc_sorted else None
+    if last_fomc and pd.Timestamp.now() > last_fomc:
+        log(f"[WARN] FOMC dates list expired (last: {last_fomc.date()}). Days_To_FOMC will be NaN for future dates.")
+
+    # Is_FOMC_Day
+    fomc_set = set(fomc_sorted)
+    df["Is_FOMC_Day"] = df.index.isin(fomc_set).astype(int)
+
+    # Days_To_FOMC using bisect (O(n log k) instead of O(n*k))
+    fomc_ts = [d.value for d in fomc_sorted]
+    dates_ts = df.index.values.astype("int64")
+    days_to = np.full(len(df), np.nan)
+    for i, ts in enumerate(dates_ts):
+        idx = bisect.bisect_left(fomc_ts, ts)
+        if idx < len(fomc_sorted):
+            days_to[i] = (fomc_sorted[idx] - df.index[i]).days
+    df["Days_To_FOMC"] = days_to
     df["Week_Before_FOMC"] = ((df["Days_To_FOMC"] >= 0) & (df["Days_To_FOMC"] <= 7)).astype(int)
     df["Week_After_FOMC"] = ((df["Days_To_FOMC"] >= -7) & (df["Days_To_FOMC"] < 0)).astype(int)
     return df
@@ -87,8 +118,12 @@ def _engineer_features_full(df):
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
     exclude = ["Target", "Close", "High", "Low", "Open", "Volume",
                "DXY_Close", "VIX_Close", "SPY_Close", "US10Y_Close", "OIL_Close",
+               "TIP_Close", "Silver_Close", "BTC_Close", "USDJPY_Close", "EURUSD_Close",
+               "Copper_Close", "Breakeven_5Y", "Breakeven_10Y", "GPR_Index",
                "sample_weight"]
     feature_cols = [c for c in df.columns if c not in exclude]
+    # Fill NaN in features with 0 (don't drop rows - some macro data has partial coverage)
+    df[feature_cols] = df[feature_cols].fillna(0)
     return df, feature_cols
 
 # ========== TRAINING ENGINE (Walk-forward CV + ATR labeling + Optuna) ==========
@@ -96,27 +131,29 @@ def _engineer_features_full(df):
 
 
 def retrain_model():
-    """Retrain XGBoost with walk-forward CV + ATR labeling + Optuna tuning"""
-    log("[LEARN] Retraining model...")
+    """Retrain XGBoost with 3-class labeling, walk-forward CV, single scaler, Optuna tuning."""
+    log("[LEARN] Retraining 3-class model...")
     df = pd.read_csv(os.path.join(trading.BASE_DIR, "xauusd_daily.csv"), parse_dates=["Date"])
     df.sort_values("Date", inplace=True)
     df.set_index("Date", inplace=True)
 
     forward_days = 3
-    df["Target"] = trading.atr_target(df, forward=forward_days, atr_mult=0.8, sl_mult=0.6)
+    # 3-class labels: 2=BULLISH, 1=NEUTRAL, 0=BEARISH
+    # Multipliers aligned with compute_tp_sl: TP=0.8 ATR, SL=1.2 ATR
+    df["Target"] = trading.atr_target(df, forward=forward_days, atr_mult=0.8, sl_mult=1.2)
 
-    # Override ATR labels with real SL/TP outcomes where available
+    # Override labels with real outcomes (directional, not SL/TP based)
     df["sample_weight"] = 1.0
     try:
-        import sqlite3
-        conn = sqlite3.connect(trading.DB_FILE)
+        import sqlite3 as _sqlite3
+        conn = _sqlite3.connect(trading.DB_FILE)
         outcomes = pd.read_sql_query(
             "SELECT date, predicted_direction, outcome FROM predictions"
             " WHERE outcome IN ('WIN','LOSS') AND sl IS NOT NULL AND tp1 IS NOT NULL ORDER BY id", conn
         )
         conn.close()
         n_total = len(df)
-        if len(outcomes) >= 5 and len(outcomes) / n_total >= 0.05:
+        if len(outcomes) >= 10 and len(outcomes) / n_total >= 0.05:
             outcomes["date"] = pd.to_datetime(outcomes["date"]).dt.date
             outcomes = outcomes.drop_duplicates("date", keep="last")
             n_applied = 0
@@ -126,20 +163,24 @@ def retrain_model():
                 if mask.any():
                     is_buy = str(row["predicted_direction"]).upper().startswith("BUY")
                     is_win = row["outcome"] == "WIN"
-                    label = 1.0 if (is_buy and is_win) or (not is_buy and not is_win) else 0.0
-                    df.loc[mask, "Target"] = label
+                    if is_buy and is_win:
+                        df.loc[mask, "Target"] = 2
+                    elif not is_buy and not is_win:
+                        df.loc[mask, "Target"] = 2
+                    elif is_buy and not is_win:
+                        df.loc[mask, "Target"] = 0
+                    else:
+                        df.loc[mask, "Target"] = 0
                     df.loc[mask, "sample_weight"] = 2.0
                     n_applied += 1
-            n_win = int((outcomes["outcome"] == "WIN").sum())
-            n_loss = int((outcomes["outcome"] == "LOSS").sum())
-            log(f"[LEARN] Overrode {n_applied} ATR labels with real outcomes ({n_win} WIN / {n_loss} LOSS, weight=2x)")
+            log(f"[LEARN] Overrode {n_applied} labels with real outcomes (weight=2x)")
         elif len(outcomes) > 0:
-            log(f"[LEARN] Skipped override: only {len(outcomes)} real outcomes (<5% of {n_total} rows)")
+            log(f"[LEARN] Skipped override: only {len(outcomes)} real outcomes")
     except Exception as e:
         log(f"[LEARN] Gagal query real outcomes: {e}")
 
     df, feature_cols = _engineer_features_full(df)
-    df.dropna(inplace=True)
+    df.dropna(subset=["Target"], inplace=True)
 
     if len(df) < 300:
         log(f"[LEARN] Data terlalu sedikit ({len(df)}), skip retrain")
@@ -150,106 +191,171 @@ def retrain_model():
     sample_weights = df["sample_weight"].values if "sample_weight" in df.columns else None
 
     from sklearn.preprocessing import RobustScaler
-    from sklearn.metrics import accuracy_score, f1_score, precision_recall_curve
+    from sklearn.metrics import accuracy_score, f1_score, classification_report
 
-    scaler = RobustScaler()
+    # Single scaler: fit once on all non-OOT data
     folds, oot = trading.walk_forward_split(X, n_splits=4, embargo=3)
-    models, scores, thresholds = [], [], []
+    oot_idx, _ = oot
+    scaler = RobustScaler()
+    scaler.fit(X[:len(X) - len(oot_idx)])  # fit on all training+val data
+
+    models, scores = [], []
+    n_classes = 3
 
     for fold_i, (train_idx, val_idx) in enumerate(folds):
-        X_train, X_val = X[train_idx], X[val_idx]
+        X_train = scaler.transform(X[train_idx])
+        X_val = scaler.transform(X[val_idx])
         y_train, y_val = y[train_idx], y[val_idx]
         sw_train = sample_weights[train_idx] if sample_weights is not None else None
-        X_train = scaler.fit_transform(X_train)
-        X_val = scaler.transform(X_val)
 
-        neg, pos = (y_train == 0).sum(), (y_train == 1).sum()
-        scale = neg / pos if pos > 0 else 1
+        # Split val: 70% early-stop, 30% eval
+        n_val = len(X_val)
+        es_end = int(n_val * 0.7)
+        X_es, X_eval = X_val[:es_end], X_val[es_end:]
+        y_es, y_eval = y_val[:es_end], y_val[es_end:]
 
-        model, params = trading.optuna_tune(X_train, y_train, X_val, y_val, scale, n_trials=50,
-                                            sample_weight=sw_train)
-        y_prob = model.predict_proba(X_val)[:, 1]
+        # Class weights for 3-class imbalance
+        class_counts = np.bincount(y_train, minlength=3).astype(float)
+        scale = class_counts.max() / (class_counts + 1e-10)
 
-        precisions, recalls, threshs = precision_recall_curve(y_val, y_prob)
-        f1s = 2 * precisions * recalls / (precisions + recalls + 1e-10)
-        best_t = threshs[np.argmax(f1s[:-1])] if len(threshs) > 0 else 0.5
-        y_pred = (y_prob >= best_t).astype(int)
-        acc = accuracy_score(y_val, y_pred)
-        f1 = f1_score(y_val, y_pred)
+        fit_kwargs = {}
+        if sw_train is not None:
+            fit_kwargs["sample_weight"] = sw_train
 
-        log(f"  Fold {fold_i + 1}/{len(folds)}: acc={acc:.1%} f1={f1:.1%} threshold={best_t:.3f} | {len(X_train)} train, {len(X_val)} val")
+        try:
+            import optuna
+            def objective(trial):
+                params = {
+                    "n_estimators": trial.suggest_int("n_estimators", 200, 600),
+                    "max_depth": trial.suggest_int("max_depth", 4, 10),
+                    "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.05, log=True),
+                    "subsample": trial.suggest_float("subsample", 0.6, 0.95),
+                    "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 0.9),
+                    "min_child_weight": trial.suggest_int("min_child_weight", 1, 5),
+                    "reg_alpha": trial.suggest_float("reg_alpha", 0.0, 1.0),
+                    "reg_lambda": trial.suggest_float("reg_lambda", 0.5, 5.0),
+                    "random_state": 42,
+                    "verbosity": 0,
+                    "objective": "multi:softprob",
+                    "num_class": n_classes,
+                }
+                from xgboost import XGBClassifier
+                m = XGBClassifier(**params)
+                m.fit(X_train, y_train, eval_set=[(X_es, y_es)], verbose=False, **fit_kwargs)
+                yp = m.predict(X_eval)
+                return f1_score(y_eval, yp, average="macro")
+
+            sampler = optuna.samplers.TPESampler(seed=42)
+            study = optuna.create_study(direction="maximize", sampler=sampler)
+            study.optimize(objective, n_trials=30, show_progress_bar=False)
+            best_params = study.best_params
+        except ImportError:
+            best_params = {"n_estimators": 400, "max_depth": 6, "learning_rate": 0.02,
+                           "subsample": 0.8, "colsample_bytree": 0.7, "min_child_weight": 3,
+                           "reg_alpha": 0.1, "reg_lambda": 2.0}
+
+        from xgboost import XGBClassifier
+        model = XGBClassifier(objective="multi:softprob", num_class=n_classes,
+                              random_state=42, verbosity=0, early_stopping_rounds=30, **best_params)
+        model.fit(X_train, y_train, eval_set=[(X_es, y_es)], verbose=False, **fit_kwargs)
+
+        y_pred = model.predict(X_eval)
+        acc = accuracy_score(y_eval, y_pred)
+        f1 = f1_score(y_eval, y_pred, average="macro")
+
+        log(f"  Fold {fold_i + 1}/{len(folds)}: acc={acc:.1%} f1={f1:.1%} | {len(X_train)} train, {len(X_val)} val")
         models.append(model)
         scores.append({"acc": acc, "f1": f1})
-        thresholds.append(best_t)
 
-    # Ensemble: weighted average of all fold models
+    # Ensemble weights
     fold_weights = np.array([max(s["f1"], 0.01) for s in scores])
     fold_weights = fold_weights / fold_weights.sum()
     ensemble_models = list(zip(models, fold_weights))
+    best_thresh = 0.55
 
-    # Final threshold: average across folds, adjusted by historical accuracy
-    best_thresh = max(np.mean(thresholds), 0.50)
-
-    # --- FEEDBACK LOOP (bidirectional with time decay) ---
-    conn = sqlite3.connect(trading.DB_FILE)
-    journal_df = pd.read_sql("SELECT * FROM predictions WHERE outcome IS NOT NULL", conn)
-    conn.close()
-
-    if len(journal_df) >= 10:
-        from datetime import timedelta
-        recent_cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-        journal_df["date_str"] = journal_df["date"].astype(str).str[:10]
-        recent = journal_df[journal_df["date_str"] >= recent_cutoff]
-        older = journal_df[journal_df["date_str"] < recent_cutoff]
-        recent_wins = int((recent["outcome"] == "WIN").sum())
-        older_wins = int((older["outcome"] == "WIN").sum())
-        weighted_wins = recent_wins * 2 + older_wins
-        weighted_total = len(recent) * 2 + len(older)
-        hist_acc = weighted_wins / weighted_total if weighted_total > 0 else 0.5
-        log(f"[LEARN] Historical accuracy (time-weighted): {hist_acc:.1%} (recent {len(recent)}, older {len(older)})")
-        if hist_acc < 0.45:
-            best_thresh = min(best_thresh + 0.10, 0.75)
-        elif hist_acc < 0.55:
-            best_thresh = min(best_thresh + 0.05, 0.70)
-        elif hist_acc >= 0.65:
-            best_thresh = max(best_thresh - 0.03, 0.55)
+    # --- FEEDBACK LOOP (min 30 evaluations) ---
+    try:
+        import sqlite3 as _sqlite3
+        conn = _sqlite3.connect(trading.DB_FILE)
+        journal_df = pd.read_sql("SELECT * FROM predictions WHERE outcome IS NOT NULL", conn)
+        conn.close()
+        if len(journal_df) >= 30:
+            from datetime import timedelta
+            recent_cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+            journal_df["date_str"] = journal_df["date"].astype(str).str[:10]
+            recent = journal_df[journal_df["date_str"] >= recent_cutoff]
+            older = journal_df[journal_df["date_str"] < recent_cutoff]
+            recent_wins = int((recent["outcome"] == "WIN").sum())
+            older_wins = int((older["outcome"] == "WIN").sum())
+            weighted_wins = recent_wins * 2 + older_wins
+            weighted_total = len(recent) * 2 + len(older)
+            hist_acc = weighted_wins / weighted_total if weighted_total > 0 else 0.5
+            log(f"[LEARN] Historical accuracy (time-weighted): {hist_acc:.1%} (recent {len(recent)}, older {len(older)})")
+            if hist_acc < 0.45:
+                best_thresh = min(best_thresh + 0.08, 0.70)
+            elif hist_acc < 0.55:
+                best_thresh = min(best_thresh + 0.03, 0.65)
+            elif hist_acc >= 0.65:
+                best_thresh = max(best_thresh - 0.02, 0.55)
+        else:
+            log(f"[LEARN] Feedback loop: butuh 30+ evaluasi (baru {len(journal_df) if 'journal_df' in dir() else 0})")
+    except Exception as e:
+        log(f"[LEARN] Feedback loop error: {e}")
 
     avg_acc = np.mean([s["acc"] for s in scores])
     avg_f1 = np.mean([s["f1"] for s in scores])
 
-    # OOT evaluation (never touched during training)
+    # OOT evaluation with single scaler
     oot_acc = None
-    oot_idx, _ = oot
     if len(oot_idx) > 5:
-        X_oot, y_oot = X[oot_idx], y[oot_idx]
-        X_oot_scaled = scaler.transform(X_oot)
-        y_prob_oot = np.zeros(len(oot_idx))
+        X_oot = scaler.transform(X[oot_idx])
+        y_oot = y[oot_idx]
+        # Ensemble 3-class prediction
+        probs_oot = np.zeros((len(oot_idx), n_classes))
         for m, w in ensemble_models:
-            y_prob_oot += w * m.predict_proba(X_oot_scaled)[:, 1]
-        y_pred_oot = (y_prob_oot >= best_thresh).astype(int)
-        from sklearn.metrics import accuracy_score
+            probs_oot += w * m.predict_proba(X_oot)
+        y_pred_oot = np.argmax(probs_oot, axis=1)
         oot_acc = float(accuracy_score(y_oot, y_pred_oot))
+        oot_report = classification_report(y_oot, y_pred_oot, target_names=["BEARISH", "NEUTRAL", "BULLISH"], output_dict=True)
         log(f"  OOT holdout ({len(oot_idx)} samples): acc={oot_acc:.1%}")
+        log(f"    BULLISH precision: {oot_report['BULLISH']['precision']:.1%} recall: {oot_report['BULLISH']['recall']:.1%}")
+        log(f"    BEARISH precision: {oot_report['BEARISH']['precision']:.1%} recall: {oot_report['BEARISH']['recall']:.1%}")
 
+    # Model versioning
     import joblib, tempfile
+    version = datetime.now().strftime("%Y%m%d_%H%M")
+    versioned_file = os.path.join(trading.BASE_DIR, f"xauusd_model_{version}.pkl")
     _data = {"ensemble_models": ensemble_models, "scaler": scaler,
-              "feature_cols": feature_cols,
+              "feature_cols": feature_cols, "n_classes": n_classes,
               "best_thresh": float(best_thresh), "forward_days": forward_days,
               "train_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
               "train_samples": len(X), "test_acc": float(avg_acc), "f1": float(avg_f1),
-              "oot_acc": oot_acc, "params": params, "fold_scores": scores}
+              "oot_acc": oot_acc, "fold_scores": scores, "model_version": version}
+    _tmp = tempfile.NamedTemporaryFile(delete=False, dir=trading.BASE_DIR, suffix=".pkl")
     try:
-        joblib.dump(_data, MODEL_FILE)
+        joblib.dump(_data, _tmp.name)
+        os.replace(_tmp.name, MODEL_FILE)
+        # Save versioned copy
+        import shutil
+        shutil.copy2(MODEL_FILE, versioned_file)
     except Exception:
-        _tmp = tempfile.NamedTemporaryFile(delete=False, dir=trading.BASE_DIR, suffix=".pkl")
         try:
-            joblib.dump(_data, _tmp.name)
-            os.replace(_tmp.name, MODEL_FILE)
-        except Exception:
             os.unlink(_tmp.name)
-            raise
+        except Exception:
+            pass
+        raise
 
-    log(f"[LEARN] Retrain selesai! Avg acc: {avg_acc:.1%} | Threshold: {best_thresh:.3f} | F1: {avg_f1:.1%}")
+    log(f"[LEARN] Retrain selesai! Avg acc: {avg_acc:.1%} | Threshold: {best_thresh:.3f} | F1: {avg_f1:.1%} | Version: {version}")
+
+    # Feature selection with SHAP (Phase 2.3)
+    try:
+        from feature_selector import select_features
+        selected, importance = select_features(models[-1], X_oot, feature_cols)
+        _data["selected_features"] = selected
+        _data["feature_importance"] = {k: float(v) for k, v in importance.items()}
+    except Exception as e:
+        log(f"[SHAP] Feature selection skipped: {e}")
+
     return True
 
 # ========== PREDIKSI & CATAT ==========
@@ -267,10 +373,10 @@ def run_prediction_job():
     feature_cols = artifacts["feature_cols"]
     best_thresh = artifacts["best_thresh"]
     forward_days = artifacts.get("forward_days", 3)
+    n_classes = artifacts.get("n_classes", 3)
     ensemble_models = artifacts.get("ensemble_models")
     single_model = artifacts.get("model")
     if ensemble_models is None and single_model is not None:
-        single_weight = 1.0 / len(single_model) if isinstance(single_model, list) else 1.0
         ensemble_models = [(single_model, 1.0)]
 
     df = pd.read_csv(os.path.join(trading.BASE_DIR, "xauusd_daily.csv"), parse_dates=["Date"])
@@ -282,14 +388,73 @@ def run_prediction_job():
     df, _ = _engineer_features_full(df)
     last_row = df[feature_cols].dropna().iloc[-1:]
     features_scaled = scaler.transform(last_row.values)
-    prob = float(sum(w * m.predict_proba(features_scaled)[0, 1] for m, w in ensemble_models))
-    # Minimum threshold untuk real trading (hindari sinyal lemah)
-    min_thresh = max(0.55, best_thresh)
-    sell_thresh = 1.0 - min_thresh
-    direction = "BUY (Bullish)" if prob >= min_thresh else "SELL (Bearish)" if prob <= sell_thresh else "NO_TRADE"
-    target_date = (latest_date + timedelta(days=forward_days)).strftime("%Y-%m-%d")
 
-    log(f"Hasil: ${latest_price:.2f} | {direction} | confidence: {prob:.1%} | threshold: {min_thresh:.3f} | target: {target_date}")
+    # 3-class ensemble prediction: [bearish, neutral, bullish]
+    if n_classes == 3:
+        probs = np.zeros(n_classes)
+        for m, w in ensemble_models:
+            probs += w * m.predict_proba(features_scaled)[0]
+        prob_bearish, prob_neutral, prob_bullish = probs
+        min_thresh = max(0.55, best_thresh)
+        if prob_bullish >= min_thresh:
+            direction = "BUY (Bullish)"
+            confidence = prob_bullish
+        elif prob_bearish >= min_thresh:
+            direction = "SELL (Bearish)"
+            confidence = prob_bearish
+        else:
+            direction = "NO_TRADE"
+            confidence = max(prob_bullish, prob_bearish)
+        log(f"3-class: bear={prob_bearish:.1%} neutral={prob_neutral:.1%} bull={prob_bullish:.1%}")
+    else:
+        # Legacy binary model fallback
+        prob = float(sum(w * m.predict_proba(features_scaled)[0, 1] for m, w in ensemble_models))
+        min_thresh = max(0.55, best_thresh)
+        sell_thresh = 1.0 - min_thresh
+        direction = "BUY (Bullish)" if prob >= min_thresh else "SELL (Bearish)" if prob <= sell_thresh else "NO_TRADE"
+        confidence = prob
+        prob_bullish = prob
+        prob_bearish = 1.0 - prob
+
+    target_date = (latest_date + timedelta(days=forward_days)).strftime("%Y-%m-%d")
+    log(f"Hasil: ${latest_price:.2f} | {direction} | conf: {confidence:.1%} | thresh: {min_thresh:.3f} | target: {target_date}")
+
+    # Regime filter (Phase 2.5): skip signals in low-ADX ranging market
+    if direction != "NO_TRADE":
+        try:
+            adx_val = df["ADX_14"].iloc[-1] if "ADX_14" in df.columns else None
+            if adx_val is not None and adx_val < 18:
+                log(f"[FILTER] Low ADX ({adx_val:.1f}): ranging market, skipping signal")
+                direction = "NO_TRADE"
+        except Exception:
+            pass
+
+    # Multi-timeframe confirmation (Phase 2.2): check daily trend for 4H agreement
+    if direction != "NO_TRADE":
+        try:
+            daily_csv = os.path.join(trading.BASE_DIR, "xauusd_daily.csv")
+            df_daily = pd.read_csv(daily_csv, parse_dates=["Date"], index_col="Date").sort_index()
+            daily_trend = trading.get_daily_trend(df_daily)
+            dt_val = daily_trend.iloc[-1] if len(daily_trend) > 0 else 0
+            if direction.startswith("BUY") and dt_val == -1:
+                log(f"[FILTER] BUY rejected: daily trend bearish")
+                direction = "NO_TRADE"
+            elif direction.startswith("SELL") and dt_val == 1:
+                log(f"[FILTER] SELL rejected: daily trend bullish")
+                direction = "NO_TRADE"
+        except Exception:
+            pass
+
+    # SHAP top drivers (Phase 2.4)
+    top_features = []
+    if direction != "NO_TRADE":
+        try:
+            from feature_selector import get_top_drivers
+            top_features = get_top_drivers(ensemble_models[0][0], features_scaled, feature_cols)
+            if top_features:
+                log(f"Top drivers: {', '.join(f'{f}({v:+.3f})' for f, v in top_features)}")
+        except Exception:
+            pass
 
     # Hitung levels & TP/SL hanya untuk BUY/SELL
     trade_df = trading.load_daily(os.path.join(trading.BASE_DIR, "xauusd_daily.csv"))
@@ -302,12 +467,13 @@ def run_prediction_job():
 
     conn = sqlite3.connect(trading.DB_FILE)
     c = conn.cursor()
+    model_ver = artifacts.get("model_version", "v3")
     c.execute("""
         INSERT INTO predictions (date, price, predicted_direction, confidence, threshold,
                                  target_date, model_version, sl, tp1, tp2, entry_realtime)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (latest_date.strftime("%Y-%m-%d"), latest_price, direction, prob, min_thresh,
-          target_date, f"xgb_v2_acc{float(artifacts.get('test_acc',0)):.0%}",
+    """, (latest_date.strftime("%Y-%m-%d"), latest_price, direction, confidence, min_thresh,
+          target_date, f"xgb_{model_ver}_acc{float(artifacts.get('test_acc',0)):.0%}",
           sl, tp1, tp2, entry_realtime))
     conn.commit()
     pred_id = c.lastrowid
@@ -318,12 +484,12 @@ def run_prediction_job():
 
     # Kirim notifikasi Telegram hanya untuk BUY/SELL
     if direction != "NO_TRADE":
-        result = telegram_notifier.send_signal(pred_id, direction, prob, latest_price, target_date, min_thresh)
+        result = telegram_notifier.send_signal(pred_id, direction, confidence, latest_price, target_date, min_thresh)
         if result:
             c.execute("UPDATE predictions SET entry_realtime=? WHERE id=?", (result["entry_realtime"], pred_id))
             conn.commit()
     else:
-        log(f"Signal lemah ({prob:.1%} di zona {sell_thresh:.2f}-{min_thresh:.2f}), tidak kirim notifikasi")
+        log(f"Signal lemah (bull={prob_bullish:.1%} bear={prob_bearish:.1%}), tidak kirim notifikasi")
 
     conn.close()
     return pred_id
@@ -361,7 +527,7 @@ def evaluate_past_predictions():
                 log(f"  #{pred_id}: {outcome} (NO_SLTP) pct: {pct:+.2f}%")
             else:
                 outcome, detail, exit_price, pct = trading.evaluate_sl_tp(
-                    df, entry_idx, entry_price, sl, tp1, tp2, is_buy, max_lookahead=5
+                    df, entry_idx, entry_price, sl, tp1, tp2, is_buy, max_lookahead=10
                 )
                 c.execute("UPDATE predictions SET outcome=?, result_pct=?, outcome_detail=? WHERE id=?",
                           (outcome, pct, detail, pred_id))
@@ -493,6 +659,7 @@ def show_learning_stats():
     if len(evaluated) >= 10:
         best_profit = -999
         best_t = 0.5
+        best_wr = 0.0
         for t in np.arange(0.5, 0.90, 0.025):
             subset = evaluated[evaluated["confidence"] >= t]
             if len(subset) >= 3:
@@ -519,13 +686,22 @@ def show_learning_stats():
 
 # ========== AUTO-RETRAIN CHECK ==========
 def should_retrain():
-    """Retrain jika ada >= 10 evaluasi baru sejak retrain terakhir"""
+    """Retrain if >= 10 new evaluations OR monthly re-optimization due."""
     try:
         import joblib
         arts = joblib.load(MODEL_FILE)
         last_train = arts.get("train_date", "2000-01-01")
     except Exception:
         last_train = "2000-01-01"
+
+    # Monthly re-optimization
+    try:
+        days_since = (datetime.now() - datetime.strptime(last_train[:10], "%Y-%m-%d")).days
+        if days_since >= 30:
+            log(f"[RETRAIN] Monthly re-optimization ({days_since} days since last)")
+            return True
+    except Exception:
+        pass
 
     conn = sqlite3.connect(trading.DB_FILE)
     c = conn.cursor()
@@ -538,77 +714,160 @@ def should_retrain():
 
 # ========== DAEMON ==========
 def run_daemon(interval_hours=4):
-    log(f"AUTO RUNNER started (interval: {interval_hours} jam)")
-    # Start Telegram polling thread
+    log(f"AUTO RUNNER V2 started (interval: {interval_hours} jam)")
     import threading
     try:
         from telegram_notifier import process_commands
         def _loop():
-            import time
-            while True:
+            while not _shutdown:
                 try:
                     process_commands()
                 except Exception:
                     pass
-                time.sleep(30)
+                time.sleep(5)
         t = threading.Thread(target=_loop, daemon=True)
         t.start()
         log("Telegram polling started")
     except Exception as e:
         log(f"Polling thread error: {e}")
     last_monthly = ""
-    while True:
+    last_heartbeat = datetime.now() - timedelta(hours=7)
+    last_trailing = datetime.now() - timedelta(hours=1)
+    while not _shutdown:
         try:
+            # Data validation
+            try:
+                from data_validator import validate_and_report
+                _, issues = validate_and_report(os.path.join(trading.BASE_DIR, "xauusd_daily.csv"))
+                if any("STALE" in i or "INVALID" in i for i in issues):
+                    log(f"[WARN] Data quality issues: {issues}")
+            except Exception:
+                pass
+
+            # Risk management checks (Phase 3)
+            try:
+                from simulation import check_drawdown_limit, check_weekly_loss_limit, get_consecutive_losses, check_max_concurrent
+                dd_ok, dd_pct = check_drawdown_limit()
+                if not dd_ok:
+                    log(f"[RISK] Max drawdown breached ({dd_pct:.1%}). Pausing.")
+                    telegram_notifier._send_telegram(f"<b>[RISK]</b> Max drawdown {dd_pct:.1%}. Trading paused.")
+                    time.sleep(interval_hours * 3600)
+                    continue
+                wl_ok, wl_pnl = check_weekly_loss_limit()
+                if not wl_ok:
+                    log(f"[RISK] Weekly loss limit breached (${wl_pnl:.2f}). Pausing.")
+                    telegram_notifier._send_telegram(f"<b>[RISK]</b> Weekly loss ${wl_pnl:.2f}. Trading paused.")
+                    time.sleep(interval_hours * 3600)
+                    continue
+                consec = get_consecutive_losses()
+                if consec >= 3:
+                    log(f"[RISK] {consec} consecutive losses. Cooldown.")
+                    time.sleep(interval_hours * 3600)
+                    continue
+            except Exception:
+                pass
+
+            # Evaluate + retrain + predict
             evaluated = evaluate_past_predictions()
             if should_retrain() or evaluated >= 10:
                 retrain_model()
             run_prediction_job()
             show_learning_stats()
 
-            # Telegram commands
-            try:
-                from telegram_notifier import process_commands
-                process_commands()
-            except Exception:
-                pass
-
             # 4H runner
             _run_4h_cycle()
 
-            # Monthly report (once per month)
+            # Trailing stops (Phase 5.2) - check every cycle
+            try:
+                from trailing_stop import manage_trailing_stops
+                updated = manage_trailing_stops()
+                if updated > 0:
+                    log(f"[TRAIL] Updated {updated} trailing stops")
+            except Exception:
+                pass
+
+            # Model health check (Phase 4.2)
+            try:
+                _check_model_health()
+            except Exception:
+                pass
+
+            # Monthly report
             month_key = datetime.now().strftime("%Y-%m")
             if month_key != last_monthly:
                 monthly_report()
+                # Monte Carlo report
+                try:
+                    from monte_carlo import run_monte_carlo, format_mc_report
+                    mc = run_monte_carlo()
+                    if mc:
+                        telegram_notifier._send_telegram(f"<b>[MONTE CARLO]</b>\n<pre>{format_mc_report(mc)}</pre>")
+                except Exception:
+                    pass
                 last_monthly = month_key
+
+            # Heartbeat (Phase 4.1)
+            if (datetime.now() - last_heartbeat).total_seconds() > 6 * 3600:
+                try:
+                    from simulation import get_active_sim, get_consecutive_losses
+                    sim = get_active_sim()
+                    bal = f"${sim[1]:.2f}" if sim else "N/A"
+                    cl = get_consecutive_losses()
+                    msg = (
+                        f"<b>[HEARTBEAT]</b>\n"
+                        f"  Status: Alive\n"
+                        f"  Balance: {bal}\n"
+                        f"  Consec losses: {cl}\n"
+                        f"  Next: {(datetime.now() + timedelta(hours=interval_hours)).strftime('%H:%M')}"
+                    )
+                    telegram_notifier._send_telegram(msg)
+                    log(f"[HEARTBEAT] Alive | Balance: {bal} | Consec losses: {cl}")
+                    last_heartbeat = datetime.now()
+                except Exception:
+                    pass
 
             log(f"Tidur {interval_hours} jam...")
             log("-" * 55)
-            time.sleep(interval_hours * 3600)
+            for _ in range(interval_hours * 360):
+                if _shutdown:
+                    break
+                time.sleep(10)
         except KeyboardInterrupt:
             log("Stopped.")
             break
         except Exception as e:
             log(f"Error: {e}")
+            try:
+                telegram_notifier._send_telegram(f"<b>[ERROR]</b> {str(e)[:200]}")
+            except Exception:
+                pass
             time.sleep(300)
+    log("Daemon stopped gracefully.")
+
+
+def _check_model_health():
+    """Monitor model accuracy degradation."""
+    conn = sqlite3.connect(trading.DB_FILE)
+    recent = pd.read_sql("SELECT outcome FROM predictions WHERE outcome IS NOT NULL ORDER BY id DESC LIMIT 50", conn)
+    conn.close()
+    if len(recent) >= 20:
+        acc = (recent["outcome"] == "WIN").sum() / len(recent)
+        if acc < 0.40:
+            telegram_notifier._send_telegram(
+                f"<b>[ALERT]</b> Model accuracy {acc:.1%} over last {len(recent)} predictions. Consider retrain.")
 
 
 def _run_4h_cycle():
-    """Run 4H evaluation + prediction in a subprocess"""
+    """Run 4H evaluation + prediction + report in a single subprocess"""
     try:
         p = sys.executable
         script = os.path.join(trading.BASE_DIR, "runner_4h.py")
-        # Evaluate
-        r = subprocess.run([p, script, "--evaluate"], capture_output=True, text=True, cwd=trading.BASE_DIR, timeout=120)
+        r = subprocess.run([p, script, "--run"], capture_output=True, text=True, cwd=trading.BASE_DIR, timeout=180)
         if r.returncode == 0 and r.stdout.strip():
             for line in r.stdout.strip().split("\n"):
                 log(f"[4H] {line.strip()}")
-        # Predict
-        r2 = subprocess.run([p, script, "--predict"], capture_output=True, text=True, cwd=trading.BASE_DIR, timeout=60)
-        if r2.returncode == 0 and r2.stdout.strip():
-            for line in r2.stdout.strip().split("\n"):
-                log(f"[4H] {line.strip()}")
-        # Weekly report
-        r3 = subprocess.run([p, script, "--report"], capture_output=True, text=True, cwd=trading.BASE_DIR, timeout=30)
+        elif r.returncode != 0:
+            log(f"[4H] Error: {r.stderr[:200]}")
     except subprocess.TimeoutExpired:
         log("[4H] Runner timeout")
     except Exception as e:
@@ -649,6 +908,7 @@ if __name__ == "__main__":
 
     os.chdir(trading.BASE_DIR)
     migrate_db()
+    import simulation as sim; sim.init_sim_db()
 
     if args.install:
         install_windows_task(args.interval)

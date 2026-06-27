@@ -1,6 +1,6 @@
 # XAUUSD AI Trading System
 
-Sistem prediksi XAUUSD (Gold) berbasis Machine Learning dengan continuous learning, paper trading, dan Telegram bot.
+Sistem prediksi XAUUSD (Gold) berbasis Machine Learning dengan **3-class classification**, continuous learning, paper trading, dan Telegram bot.
 
 ---
 
@@ -31,26 +31,28 @@ Sistem prediksi XAUUSD (Gold) berbasis Machine Learning dengan continuous learni
 │                                                              │
 │  ┌──────────┐    ┌──────────────┐    ┌──────────────────┐   │
 │  │  Data    │───▶│  Feature     │───▶│  ML Model        │   │
-│  │  Source  │    │  Engineering │    │  (XGBoost)       │   │
+│  │  Source  │    │  Engineering │    │  (XGBoost 3cls)  │   │
 │  └──────────┘    └──────────────┘    └──────────────────┘   │
 │       │                                      │               │
 │       ▼                                      ▼               │
 │  ┌──────────┐    ┌──────────────┐    ┌──────────────────┐   │
 │  │  Kitco   │    │  Patterns    │    │  Ensemble        │   │
-│  │  yfinance│    │  (S/R,       │    │  (3-4 fold       │   │
-│  │  Yahoo   │    │   candle)    │    │   models)        │   │
+│  │  yfinance│    │  (S/R,       │    │  (4 fold models  │   │
+│  │  Yahoo   │    │   candle,    │    │   + Optuna)      │   │
+│  │          │    │   regime)    │    │                  │   │
 │  └──────────┘    └──────────────┘    └──────────────────┘   │
 │                                               │               │
 │                                               ▼               │
 │  ┌──────────┐    ┌──────────────┐    ┌──────────────────┐   │
 │  │ Telegram │◀───│  Daemon      │◀───│  Signal          │   │
-│  │  Bot     │    │  (poll.py)   │    │  Generator       │   │
+│  │  Bot     │    │  (launchd)   │    │  Generator       │   │
 │  └──────────┘    └──────────────┘    └──────────────────┘   │
 │       │                 │                       │             │
 │       ▼                 ▼                       ▼             │
 │  ┌──────────┐    ┌──────────────┐    ┌──────────────────┐   │
-│  │  User    │    │  Real-time   │    │  Paper Trading   │   │
-│  │  Chat    │    │  Evaluation  │    │  Simulation      │   │
+│  │  User    │    │  OHLC Eval   │    │  Paper Trading   │   │
+│  │  Chat    │    │  (open-based │    │  Simulation      │   │
+│  │          │    │   heuristic) │    │                  │   │
 │  └──────────┘    └──────────────┘    └──────────────────┘   │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
@@ -59,12 +61,12 @@ Sistem prediksi XAUUSD (Gold) berbasis Machine Learning dengan continuous learni
 ### Alur Data
 
 1. **Data Collection**: `update_data.py` download data OHLCV harian + 4 jam dari yfinance, plus data makro (DXY, VIX, SPY, US10Y, OIL)
-2. **Feature Engineering**: `trading.py` generate 60+ fitur teknikal + makro
-3. **Training**: `auto_runner.py` (daily) / `runner_4h.py` (4H) train model XGBoost
-4. **Prediction**: Model menghasilkan probabilitas BUY/SELL
-5. **Signal**: Jika confidence melewati threshold, sinyal dikirim ke Telegram
-6. **Evaluation**: Harga real-time dicek terhadap SL/TP, outcome dicatat
-7. **Feedback**: Outcome real digunakan untuk retrain model (continuous learning)
+2. **Feature Engineering**: `trading.py` generate 70+ fitur teknikal + makro + regime + pola
+3. **Training**: `auto_runner.py` (daily) / `runner_4h.py` (4H) train model XGBoost 3-class
+4. **Prediction**: Model menghasilkan probabilitas BEARISH / NEUTRAL / BULLISH
+5. **Signal**: Jika probabilitas BULLISH atau BEARISH melewati threshold, sinyal dikirim ke Telegram
+6. **Evaluation**: Harga real-time dicek terhadap SL/TP dengan open-price heuristic, outcome dicatat
+7. **Feedback**: Outcome real digunakan untuk retrain model (continuous learning, min 30 evaluasi)
 
 ---
 
@@ -72,42 +74,49 @@ Sistem prediksi XAUUSD (Gold) berbasis Machine Learning dengan continuous learni
 
 | File | Fungsi |
 |------|--------|
-| `trading.py` | **Core library** — feature engineering, ATR labeling, Optuna tuning, walk-forward CV, centralized paths |
-| `auto_runner.py` | **Daily runner** — retrain model daily, prediksi, evaluasi historis, show stats |
-| `runner_4h.py` | **4H runner** — retrain model 4 jam, prediksi, evaluasi OHLC |
-| `poll_commands.py` | **Daemon** — polling Telegram (5s) + evaluasi real-time (60s) + deteksi candle baru |
-| `telegram_notifier.py` | **Telegram bot** — semua command handling, notifikasi, price fetching |
-| `simulation.py` | **Paper trading** — virtual account, lot sizing, P&L tracking |
-| `patterns.py` | **Pattern detection** — candlestick patterns, S/R, double top/bottom |
-| `update_data.py` | **Data downloader** — download OHLCV + makro data |
-| `xauusd_journal.db` | **Database SQLite** — predictions, simulation, outcomes |
-| `xauusd_model.pkl` | **Model daily** — XGBoost ensemble + scaler + threshold |
-| `xauusd_model_4h.pkl` | **Model 4H** — XGBoost ensemble + scaler + threshold |
+| `trading.py` | **Core library** — feature engineering, ATR 3-class labeling, Optuna tuning, walk-forward CV, TP/SL evaluation |
+| `auto_runner.py` | **Daily runner + daemon** — retrain 3-class model, prediksi, evaluasi historis, Telegram polling, model versioning |
+| `runner_4h.py` | **4H runner** — retrain 3-class model 4 jam, prediksi, evaluasi OHLC |
+| `telegram_notifier.py` | **Telegram bot** — command handling, notifikasi, price fetching, persistent offset |
+| `simulation.py` | **Paper trading** — virtual account, lot sizing, P&L tracking dengan outcome detail |
+| `patterns.py` | **Pattern detection** — candlestick patterns, S/R, double top/bottom (vectorized) |
+| `update_data.py` | **Data downloader** — download OHLCV + makro data (guarded `__main__`) |
+| `.env` | **Credentials** — Telegram bot token dan chat ID |
+| `.tg_offset` | **Telegram offset** — persistent getUpdates offset |
+| `xauusd_journal.db` | **Database SQLite** — predictions, predictions_4h, simulation, outcomes |
+| `xauusd_model.pkl` | **Model daily** — XGBoost 3-class ensemble + scaler + threshold |
+| `xauusd_model_4h.pkl` | **Model 4H** — XGBoost 3-class ensemble + scaler + threshold |
+| `xauusd_model_YYYYMMDD_HHMM.pkl` | **Model versioned** — backup model per retrain |
 
 ---
 
 ## 3. Machine Learning Pipeline
 
-### Model: XGBoost Ensemble
+### Model: XGBoost 3-Class Ensemble
 
-Sistem menggunakan **ensemble dari beberapa fold models** (bukan single model):
+Sistem menggunakan **3-class classification** (BEARISH / NEUTRAL / BULLISH) dengan **ensemble dari fold models**:
 
-- **Daily**: 4 fold models, bobot berdasarkan F1 score
-- **4H**: 3 fold models, bobot berdasarkan F1 score
+- **Daily**: 4 fold models, bobot berdasarkan macro F1 score
+- **4H**: 3 fold models, bobot berdasarkan macro F1 score
 
 Prediksi = weighted average dari semua fold models:
 ```
-prob = Σ (weight_i × model_i.predict_proba(X))
+probs = Σ (weight_i × model_i.predict_proba(X))
+# probs = [prob_bearish, prob_neutral, prob_bullish]
 ```
+
+Keunggulan 3-class vs binary:
+- Model bisa mengenali pola **bearish secara eksplisit** (bukan cuma "bukan bullish")
+- NO_TRADE zone terjadi ketika baik bearish maupun bullish tidak confident
+- Sinyal SELL lebih reliable karena model dilatih untuk mengenali downside
 
 ### Hyperparameter Tuning: Optuna
 
 Setiap fold di-tune menggunakan **Optuna** dengan:
-- **Daily**: 50 trials per fold
-- **4H**: 30 trials per fold
+- **Daily**: 30 trials per fold
+- **4H**: 20 trials per fold
 - **Sampler**: TPESampler (Tree-structured Parzen Estimator)
-- **Pruner**: MedianPruner (stop trial jelek lebih awal)
-- **Metric**: F1 score pada validation set
+- **Metric**: macro F1 score pada evaluasi subset (bukan early-stop subset)
 
 Parameter yang di-tune:
 | Parameter | Range |
@@ -135,12 +144,21 @@ OOT:    [================================]---[=holdout=]
 - **Embargo**: 3 bar (daily) / 8 bar (4H) — mencegah label leakage
 - **OOT**: 15% data terakhir, tidak pernah disentuh saat training
 - **n_splits**: 4 (daily) / 3 (4H)
+- **Scaler**: fit **sekali** di semua non-OOT data (konsisten untuk semua fold)
+
+### Validation Split (Anti-Overfitting)
+
+Setiap fold validation di-split:
+- **70%** → early stopping (passed ke `eval_set`)
+- **30%** → evaluasi F1 (Optuna objective)
+
+Ini mencegah data leakage di mana early stopping dan evaluasi pakai data yang sama.
 
 ### Sample Weight
 
 - **ATR labels**: weight = 1.0
 - **Real outcomes** (dari SL/TP aktual): weight = 2.0
-- Real outcomes hanya di-override jika ≥ 5% dari total data dan ≥ 5 samples
+- Real outcomes hanya di-override jika ≥ 10 samples DAN ≥ 5% dari total data
 
 ---
 
@@ -166,12 +184,20 @@ OOT:    [================================]---[=holdout=]
 | `Volume_SMA_20` | Volume SMA 20 |
 | `Volume_Ratio` | Volume / Volume_SMA_20 |
 
-### Calendar Features
+### Regime Features (NEW)
 | Feature | Deskripsi |
 |---------|-----------|
-| `DayOfWeek` | Hari dalam minggu (0-4) |
-| `Month` | Bulan (1-12) |
-| `Hour` | Jam (khusus 4H) |
+| `ATR_Pctile_100` | ATR percentile rank dalam 100 bar terakhir (deteksi volatilitas regime) |
+| `ADX_Proxy` | Proxy ADX — trend strength (0-1) |
+
+### Calendar Features (Cyclical Encoding)
+| Feature | Deskripsi |
+|---------|-----------|
+| `DayOfWeek_sin/cos` | Hari dalam minggu, encoded sebagai sin/cos (周期性) |
+| `Month_sin/cos` | Bulan, encoded sebagai sin/cos |
+| `Hour_sin/cos` | Jam (khusus 4H), encoded sebagai sin/cos |
+
+Cyclical encoding memastikan Desember (12) dan Januari (1) dianggap berdekatan, bukan berjauhan.
 
 ### Macro Features (Makroekonomi)
 | Feature | Deskripsi |
@@ -185,11 +211,19 @@ OOT:    [================================]---[=holdout=]
 | `Gold_DXY_Corr_20` | Korelasi Gold-DXY 20 bar |
 | `Gold_VIX_Corr_20` | Korelasi Gold-VIX 20 bar |
 
+### Macro Features 4H (NEW)
+Model 4H sekarang juga menggunakan data DXY yang di-resample dari daily:
+| Feature | Deskripsi |
+|---------|-----------|
+| `DXY_Return_1b/4b` | DXY return per 1/4 bar 4H |
+| `DXY_Dist_EMA20` | Jarak DXY ke EMA20 |
+| `GOLD_DXY_Corr_8` | Korelasi Gold-DXY 8 bar 4H |
+
 ### FOMC Features
 | Feature | Deskripsi |
 |---------|-----------|
 | `Is_FOMC_Day` | Apakah hari ini FOMC |
-| `Days_To_FOMC` | Jumlah hari menuju FOMC berikutnya |
+| `Days_To_FOMC` | Jumlah hari menuju FOMC berikutnya (bisect, O(n log k)) |
 | `Week_Before_FOMC` | 7 hari sebelum FOMC |
 | `Week_After_FOMC` | 7 hari setelah FOMC |
 
@@ -198,7 +232,7 @@ OOT:    [================================]---[=holdout=]
 |---------|-----------|
 | `Body_Ratio` | Rasio body terhadap range candle |
 | `Upper/Lower_Wick_Ratio` | Rasio wick atas/bawah |
-| `Is_Doji/Hammer/Shooting_Star` | Pola candlestick |
+| `Is_Doji/Hammer/Shooting_Star` | Pola candlestick (hanya jika range > $0.10) |
 | `Is_Pin_Bar/Marubozu` | Pola candlestick lanjutan |
 | `Is_Bullish/Bearish_Engulfing` | Pola engulfing |
 | `Is_Inside_Bar` | Inside bar |
@@ -206,44 +240,49 @@ OOT:    [================================]---[=holdout=]
 | `Near_Resistance/Support` | Dekat resistance/support (< 0.5%) |
 | `Breakout_High/Low` | Breakout dari high/low |
 | `Touch_Count_High/Low` | Jumlah sentuhan di level |
-| `Is_Double_Top/Bottom` | Pola double top/bottom |
+| `Is_Double_Top/Bottom` | Pola double top/bottom (vectorized) |
 
 ---
 
 ## 5. Labeling & Target
 
-### ATR Triple-Barrier Labeling
+### ATR Triple-Barrier Labeling (3-Class)
 
-Target (label) dihitung menggunakan **ATR-based triple-barrier method**:
+Target (label) dihitung menggunakan **ATR-based triple-barrier method** dengan **3 kelas**:
 
 ```python
 entry = Close[i]
 atr = TR.rolling(14).mean().shift(1)[i]  # shifted, no future leak
-tp = entry + atr * atr_mult              # take profit level
-sl = entry - atr * sl_mult               # stop loss level
+tp = entry + atr * 0.8                    # take profit level
+sl = entry - atr * 1.2                    # stop loss level
 
-# Forward scan (3 bar ke depan)
-for bar in future_bars:
-    if bar.High >= tp → Target = 1 (BUY win)
-    if bar.Low <= sl  → Target = 0 (SELL win)
-    # Jika keduanya kena → cek mana yang kena duluan
-    # Jika tidak kena → Target berdasarkan close terakhir
+# Forward scan (3 bar ke depan untuk daily)
+first_tp = bar pertama di mana High >= tp
+first_sl = bar pertama di mana Low <= sl
+
+if first_tp < first_sl → Target = 2 (BULLISH)
+elif first_sl < first_tp → Target = 0 (BEARISH)
+else → Target = 1 (NEUTRAL)
 ```
 
-Parameter:
+Parameter (aligned dengan trading):
 | Parameter | Daily | 4H |
 |-----------|-------|-----|
 | `forward` | 3 bar (3 hari) | 8 bar (32 jam) |
-| `atr_mult` (TP) | 0.8 | 0.6 |
-| `sl_mult` (SL) | 0.6 | 0.4 |
+| `atr_mult` (TP) | 0.8 | 0.8 |
+| `sl_mult` (SL) | 1.2 | 1.2 |
+
+Label multipliers sekarang **identik** dengan trading SL/TP multipliers (sebelumnya berbeda).
 
 ### Real Outcome Override
 
 Jika ada data real outcome (dari evaluasi SL/TP aktual), label ATR di-override:
-- **WIN** → Target = 1 (jika BUY) atau 0 (jika SELL)
-- **LOSS** → Target = 0 (jika BUY) atau 1 (jika SELL)
+- **WIN + BUY** → Target = 2 (BULLISH)
+- **WIN + SELL** → Target = 2 (BULLISH — prediksi benar)
+- **LOSS + BUY** → Target = 0 (BEARISH)
+- **LOSS + SELL** → Target = 0 (BEARISH — prediksi benar)
 - **Weight**: 2x (lebih dipercaya daripada ATR label)
-- **Syarat**: minimal 5 samples DAN ≥ 5% dari total data
+- **Syarat**: minimal 10 samples DAN ≥ 5% dari total data
 
 ---
 
@@ -253,58 +292,54 @@ Jika ada data real outcome (dari evaluasi SL/TP aktual), label ATR di-override:
 
 ```
 1. Load data daily (xauusd_daily.csv)
-2. Hitung ATR target (triple-barrier)
-3. Override dengan real outcomes (jika ada)
-4. Feature engineering (60+ fitur)
+2. Hitung ATR target 3-class (triple-barrier, aligned multipliers)
+3. Override dengan real outcomes (jika ada, min 10 samples)
+4. Feature engineering (70+ fitur termasuk regime + cyclical)
 5. Walk-forward split (4 folds + OOT)
-6. Untuk setiap fold:
-   a. Scale dengan RobustScaler
-   b. Tune hyperparameter dengan Optuna (50 trials)
-   c. Hitung F1-optimal threshold dari PR curve
-   d. Simpan model dan threshold
-7. Ensemble: weighted average dari semua fold models
-8. OOT evaluation (never touched during training)
-9. Feedback loop: adjust threshold berdasarkan historis
-10. Simpan model ke xauusd_model.pkl
+6. Fit scaler SEKALI di semua non-OOT data
+7. Untuk setiap fold:
+   a. Transform dengan scaler (fit sudah dilakukan)
+   b. Split val: 70% early-stop, 30% evaluasi
+   c. Tune hyperparameter dengan Optuna (30 trials)
+   d. Train model multi:softprob (3-class)
+   e. Hitung macro F1 pada evaluasi subset
+   f. Simpan model dan score
+8. Ensemble: weighted average dari semua fold models
+9. OOT evaluation dengan classification report per kelas
+10. Feedback loop: adjust threshold (min 30 evaluasi)
+11. Simpan model ke xauusd_model.pkl + versi timestamped
 ```
 
 ### Alur Training (4H)
 
 Sama dengan daily, tapi:
 - 3 folds (bukan 4)
-- 30 Optuna trials (bukan 50)
+- 20 Optuna trials (bukan 30)
 - Embargo = 8 bar (bukan 3)
-- Data dari xauusd_4h.csv
+- Data dari xauusd_4h.csv (termasuk DXY resampled)
 
 ---
 
 ## 7. Signal Generation (Trigger)
 
-### Kondisi Sinyal
+### Kondisi Sinyal (3-Class)
 
-Sinyal dikirim ke Telegram jika **semua kondisi** terpenuhi:
+Sinyal dikirim ke Telegram jika probabilitas kelas tertentu melewati threshold:
 
-#### Daily
+#### Daily & 4H
 | Kondisi | Threshold |
 |---------|-----------|
-| **BUY** | `prob ≥ max(0.55, best_thresh)` |
-| **SELL** | `prob ≤ 1 - max(0.55, best_thresh)` |
-| **NO_TRADE** | Di antara BUY dan SELL |
-
-#### 4H
-| Kondisi | Threshold |
-|---------|-----------|
-| **BUY** | `prob ≥ max(0.55, best_thresh)` |
-| **SELL** | `prob ≤ 1 - max(0.55, best_thresh)` |
-| **NO_TRADE** | Di antara BUY dan SELL |
+| **BUY** | `prob_bullish ≥ max(0.55, best_thresh)` |
+| **SELL** | `prob_bearish ≥ max(0.55, best_thresh)` |
+| **NO_TRADE** | Kedua prob di bawah threshold |
 
 ### Contoh
 
-| Confidence | Threshold 0.55 | Hasil |
-|------------|---------------|-------|
-| 0.72 | ≥ 0.55 | **BUY signal** ✅ |
-| 0.30 | ≤ 0.45 | **SELL signal** ✅ |
-| 0.50 | 0.45-0.55 | **NO_TRADE** ❌ (tidak kirim) |
+| prob_bearish | prob_neutral | prob_bullish | Threshold 0.55 | Hasil |
+|-------------|-------------|-------------|---------------|-------|
+| 15% | 13% | 72% | ≥ 0.55 | **BUY** (bull 72%) |
+| 65% | 20% | 15% | ≥ 0.55 | **SELL** (bear 65%) |
+| 30% | 40% | 30% | < 0.55 | **NO_TRADE** |
 
 ### SL/TP Calculation
 
@@ -313,14 +348,14 @@ SL/TP dihitung dari ATR dan level teknikal:
 **BUY:**
 ```python
 sl  = max(low_20, entry - atr * 1.2)
-tp1 = max(entry + atr * 0.8, entry + atr * 0.5)
+tp1 = max(entry + atr * 0.8, bb_upper)
 tp2 = max(entry + atr * 1.8, ema50)
 ```
 
 **SELL:**
 ```python
 sl  = min(high_20, entry + atr * 1.2)
-tp1 = min(entry - atr * 0.8, entry - atr * 0.5)
+tp1 = min(entry - atr * 0.8, bb_lower)
 tp2 = min(entry - atr * 1.8, low_20)
 ```
 
@@ -333,33 +368,17 @@ tp2 = min(entry - atr * 1.8, low_20)
 Harga diambil dari **Kitco** (web scraping) dengan fallback ke **yfinance**:
 - Multi-pattern regex untuk menangkap berbagai format harga
 - 2 retry attempts jika gagal
+- SSL per-request (tidak disabled global)
 - Fallback ke GC=F (Gold Futures) 1-minute data
-
-### Evaluasi Real-Time
-
-Daemon mengecek SL/TP setiap **60 detik** (normal) atau **5 detik** (saat harga dekat level):
-
-```python
-# Cek apakah harga dekat SL/TP (dalam 0.5%)
-def _is_near_sltp():
-    for setiap prediksi aktif:
-        untuk setiap level (sl, tp1, tp2):
-            if abs(harga - level) / harga < 0.005:
-                return True  # → check setiap 5 detik
-    return False  # → check setiap 60 detik
-```
-
-Urutan pengecekan (prioritas):
-1. **SL** → Jika harga menyentuh SL, catat LOSS
-2. **TP2** → Jika harga menyentuh TP2, catat WIN (TP2_HIT)
-3. **TP1** → Jika harga menyentuh TP1, catat WIN (TP1_HIT)
 
 ### Evaluasi OHLC (Batch)
 
-Untuk prediksi yang belum dievaluasi real-time, dilakukan evaluasi OHLC batch:
-- Scan bar forward dari entry point
-- First-touch logic: yang kena duluan yang dihitung
-- Jika tidak kena dalam 5 bar → EXPIRED (lihat close terakhir)
+Untuk prediksi yang belum dievaluasi, dilakukan evaluasi OHLC batch:
+- Scan bar forward dari entry point (**max 10 bar**, sebelumnya 5)
+- **Open-price heuristic**: Jika TP dan SL kena di bar yang sama, gunakan open price untuk tebak mana yang kena duluan
+  - Open dekat SL → SL kena duluan
+  - Open dekat TP → TP kena duluan
+- Jika tidak kena dalam 10 bar → EXPIRED (lihat close terakhir)
 
 ---
 
@@ -379,7 +398,8 @@ lot = (balance * 0.01) / (sl_distance * 100)
 
 - `XAU_USD_PER_MOVE = 100` → 1 lot = 100 oz, $1 move = $100 P&L
 - **Minimum lot**: 0.01
-- **Jika lot < 0.01** atau risk > 2% → tidak trade (return None)
+- **Minimum SL distance**: 0.03% dari harga (bukan absolut $1)
+- **Jika lot < 0.01** → tidak trade (return None)
 
 ### P&L Calculation
 
@@ -401,13 +421,15 @@ pnl = lot * price_diff * 100
 
 ### Outcome Handling
 
-| Outcome | Exit Price |
-|---------|-----------|
-| WIN / TP1_HIT | TP1 |
-| TP2_HIT | TP2 |
-| LOSS / SL_HIT | SL |
-| EXPIRED | Close price terakhir |
-| NO_TRADE | Tidak ada trade |
+| Outcome | Detail | Exit Price |
+|---------|--------|-----------|
+| WIN | TP1_HIT | TP1 |
+| WIN | TP2_HIT | TP2 |
+| LOSS | SL_HIT | SL |
+| EXPIRED | — | Close price terakhir |
+| NO_TRADE | — | Tidak ada trade |
+
+P&L simulation sekarang menggunakan **outcome_detail** (TP1 vs TP2) untuk exit price yang akurat.
 
 ---
 
@@ -419,38 +441,43 @@ pnl = lot * price_diff * 100
 |---------|--------|
 | `/start` atau `/start 100` | Mulai paper trading dengan balance awal |
 | `/bal` | Lihat balance dan statistik |
+| `/price` | Harga XAUUSD real-time |
+| `/info` | Info prediksi dan performa bulanan |
+| `/retrain` | Trigger retrain manual (async, hasil dikirim ke Telegram) |
 | `/reset` | Reset simulasi |
-| `/info` | Info prediksi terakhir |
-| `/retrain` | Trigger retrain manual (async) |
-| `/stats` | Lihat learning statistics |
+
+### Polling
+
+- Polling Telegram setiap **5 detik**
+- Offset disimpan persistent di `.tg_offset` (tidak replay perintah lama)
+- Setiap command di-handle terpisah (satu error tidak blok command lain)
 
 ### Signal Notification
 
 Format sinyal yang dikirim ke Telegram:
 
 ```
-🔔 XAUUSD SINYAL BUY
-
-Harga: $4,060.50
-Confidence: 72.3%
-Threshold: 55.0%
-Target: 2026-06-29
-
-SL: $4,045.20
-TP1: $4,078.80
-TP2: $4,095.50
+🔥 [XAUUSD SIGNAL] #4 — Daily Candle
+BUY LONG
+  Confidence : 55.1% (threshold 0.550)
+  Daily Close: $4044.40
+  ▶ Entry    : $4044.40
+  SL         : $3963.30 (-$81.10)
+  TP1        : $4604.65 (+$560.25, RR 1:6.91)
+  TP2        : $4427.78 (+$383.38, RR 1:4.73)
+  ATR / RSI  : $67.6 / 52
+  Target     : 2026-06-29
 ```
 
 ### Outcome Notification
 
-Setelah evaluasi:
-
 ```
-✅ WIN (TP1_HIT)
-Prediksi: BUY @ $4,060.50
-Exit: $4,078.80
-P&L: +$18.30 (+0.45%)
-Balance: $118.30
+🟢 [CLOSED] #4 — Daily
+  Direction: BUY (Bullish)
+  Entry: $4044.40
+  Result: TP1 HIT! +0.45%
+  Profit: $18.30 (+0.45%)
+  Sim: 0.03 lot | P&L: +$18.30 | Bal: $118.30
 ```
 
 ---
@@ -460,83 +487,109 @@ Balance: $118.30
 ### Mekanisme
 
 ```
-Prediksi → Evaluasi → Simpan Outcome → Retrain → Model Baru
+Prediksi → Evaluasi → Simpan Outcome → Retrain → Model Baru (3-class)
     ↑                                                    │
     └────────────────────────────────────────────────────┘
 ```
 
 ### Kapan Retrain?
 
-- **Daily**: otomatis saat candle baru terdeteksi
-- **4H**: otomatis saat candle baru terdeteksi
-- **Manual**: via `/retrain` command
-- **Syarat**: ≥ 10 evaluasi baru sejak retrain terakhir
+- **Daemon**: otomatis setiap 4 jam (update data + prediksi + evaluasi + retrain jika perlu)
+- **Manual**: via `/retrain` command di Telegram
+- **Syarat**: ≥ 10 evaluasi baru sejak retrain terakhir ATAU `should_retrain()` true
 
 ### Feedback Loop (Threshold Adjustment)
 
 Threshold diadjust berdasarkan performa historis dengan **time decay**:
 
 ```python
+# Minimal 30 evaluasi sebelum adjust (sebelumnya 10)
 # Outcomes 30 hari terakhir = 2x weight
 weighted_acc = (recent_wins * 2 + older_wins) / (recent_count * 2 + older_count)
 
-if weighted_acc < 0.45:    threshold += 0.10  (max 0.75)  # sangat buruk
-elif weighted_acc < 0.55:  threshold += 0.05  (max 0.70)  # buruk
-elif weighted_acc >= 0.65: threshold -= 0.03  (min 0.55)  # bagus → turunkan
+if weighted_acc < 0.45:    threshold += 0.08  (max 0.70)  # sangat buruk
+elif weighted_acc < 0.55:  threshold += 0.03  (max 0.65)  # buruk
+elif weighted_acc >= 0.65: threshold -= 0.02  (min 0.55)  # bagus → turunkan
 # 0.55-0.64: tidak ada perubahan (stabil)
 ```
 
 Sifat:
-- **Konservatif**: naik agresif (+0.05/+0.10), turun pelan (-0.03)
+- **Konservatif**: naik agresif, turun pelan
 - **Time decay**: outcome terbaru lebih berpengaruh
-- **Bisa turun**: threshold tidak stuck di 0.75 selamanya
+- **Min 30 evaluasi**: mencegah over-reaksi ke sample kecil
+- **Bisa turun**: threshold tidak stuck di high selamanya
+
+### Model Versioning
+
+Setiap retrain menyimpan model dengan timestamp:
+```
+xauusd_model.pkl              → model aktif (terbaru)
+xauusd_model_20260627_0727.pkl → backup versi
+```
 
 ---
 
 ## 12. Cara Menjalankan
 
+### macOS (Daemon via launchd)
+
+Daemon sudah terinstall dan auto-start saat login:
+
+```bash
+# Cek status
+launchctl list | grep xauusd
+
+# Stop
+launchctl unload ~/Library/LaunchAgents/com.xauusd.bot.plist
+
+# Start
+launchctl load ~/Library/LaunchAgents/com.xauusd.bot.plist
+
+# Lihat log live
+tail -f ~/Documents/XAUUSD_bot/auto_runner.log
+```
+
 ### Prerequisites
 
 ```bash
-pip install pandas numpy scikit-learn xgboost optuna joblib yfinance
-```
+# Buat virtual environment
+uv venv .venv --python 3.11
 
-### Start Daemon (Background)
+# Install dependencies
+uv pip install pandas numpy scikit-learn xgboost optuna joblib yfinance matplotlib seaborn
 
-Daemon otomatis berjalan saat Windows login via VBS:
-```
-C:\Users\zaini\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\XAUUSD_Daemon.vbs
-```
-
-Atau manual:
-```bash
-python poll_commands.py
+# Install libomp (untuk XGBoost di macOS)
+brew install libomp
 ```
 
 ### Manual Commands
 
 ```bash
 # Download/update data
-python update_data.py
+.venv/bin/python update_data.py
 
-# Train model daily
-python auto_runner.py
+# Train model daily (3-class)
+.venv/bin/python auto_runner.py --retrain
 
-# Train model 4H
-python runner_4h.py --run
+# Train model 4H (3-class)
+.venv/bin/python runner_4h.py --retrain
 
-# Predict (daily)
-python auto_runner.py --predict
+# Run single cycle (update + predict + evaluate)
+.venv/bin/python auto_runner.py
 
 # Show learning stats
-python auto_runner.py --stats
+.venv/bin/python auto_runner.py --stats
+
+# Daemon mode
+.venv/bin/python auto_runner.py --daemon --interval 4
 ```
 
 ### Logs
 
-- `poll.log` — daemon log
-- `auto_runner.log` — daily training log
+- `auto_runner.log` — daily training + daemon log
 - `runner_4h.log` — 4H training log
+- `poll.log` — Telegram command log
+- `launchd_stdout.log` / `launchd_stderr.log` — daemon stdout/stderr
 
 ---
 
@@ -544,21 +597,22 @@ python auto_runner.py --stats
 
 ### Daemon tidak jalan
 
-```powershell
-# Cek apakah daemon berjalan
-Get-Process python | Where-Object {$_.CommandLine -like "*poll_commands*"}
+```bash
+# Cek status
+launchctl list | grep xauusd
+ps aux | grep auto_runner | grep -v grep
 
-# Restart daemon
-Stop-Process -Name python -Force
-Start-Process "C:\Users\zaini\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe" -ArgumentList "poll_commands.py" -WorkingDirectory "C:\Users\zaini\OneDrive\Documents\Project\Trading XAUUSD"
+# Restart
+launchctl unload ~/Library/LaunchAgents/com.xauusd.bot.plist
+launchctl load ~/Library/LaunchAgents/com.xauusd.bot.plist
 ```
 
 ### Model tidak ada / error load
 
 ```bash
 # Retrain dari awal
-python auto_runner.py
-python runner_4h.py --run
+.venv/bin/python auto_runner.py --retrain
+.venv/bin/python runner_4h.py --retrain
 ```
 
 ### Telegram tidak merespons
@@ -566,40 +620,58 @@ python runner_4h.py --run
 1. Cek `poll.log` untuk error
 2. Pastikan token bot benar di `.env`
 3. Pastikan chat_id benar
+4. Offset tersimpan di `.tg_offset` — hapus file ini jika ada masalah replay
 
 ### Database locked
 
 ```bash
 # Restart daemon (release connection)
-# Atau hapus file lock:
-del xauusd_journal.db-journal
+launchctl unload ~/Library/LaunchAgents/com.xauusd.bot.plist
+launchctl load ~/Library/LaunchAgents/com.xauusd.bot.plist
+```
+
+### XGBoost libomp error
+
+```bash
+brew install libomp
 ```
 
 ---
 
 ## Catatan Teknis
 
-### SSL Issue
+### SSL
 
-Karena Hermes venv tidak punya CA certificates, SSL verification dimatikan:
-```python
-ssl._create_default_https_context = ssl._create_unverified_context
-```
-
-Ini diperlukan untuk Telegram API dan yfinance. Tidak berpengaruh pada keamanan lokal.
+SSL verification dilakukan per-request dengan context terpisah (tidak disabled global). Setiap HTTP request ke Telegram API, Kitco, dan yfinance menggunakan SSL context sendiri yang fleksibel.
 
 ### Model File Compatibility
 
 Model file (.pkl) berisi:
-- `ensemble_models`: list of (model, weight) tuples
-- `scaler`: RobustScaler yang sudah fit
-- `feature_cols`: nama kolom fitur
-- `best_thresh`: threshold optimal
+- `ensemble_models`: list of (model, weight) tuples — 3-class XGBoost
+- `scaler`: RobustScaler yang sudah fit di semua non-OOT data
+- `feature_cols`: nama kolom fitur (70+ fitur)
+- `n_classes`: 3 (BEARISH, NEUTRAL, BULLISH)
+- `best_thresh`: threshold optimal (min 0.55)
+- `model_version`: timestamp versi
 - `fold_scores`: akurasi per fold
 - `oot_acc`: out-of-time accuracy
 
-Model lama (single model) masih bisa di-load — sistem auto-detect format.
+Model lama (binary/single model) masih bisa di-load — sistem auto-detect format.
+
+### Database Schema
+
+**predictions** (daily):
+- id, date, price, predicted_direction, confidence, threshold, target_date, model_version, sl, tp1, tp2, entry_realtime, outcome, outcome_detail, result_pct, notified
+
+**predictions_4h**:
+- id, date, time, price, predicted_direction, confidence, threshold, target_date, target_time, model_version, sl, tp1, tp2, entry_realtime, outcome, outcome_detail, result_pct, notified
+
+**simulation**:
+- id, balance, initial_balance, active, created_at
+
+**sim_trades**:
+- id, sim_id, prediction_id, timeframe, direction, entry, sl, tp1, lot_size, risk_amount, outcome, pnl, balance_before, balance_after, created_at
 
 ---
 
-*Last updated: 2026-06-26*
+*Last updated: 2026-06-27*

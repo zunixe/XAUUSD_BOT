@@ -1,0 +1,488 @@
+"""XAUUSD Trading Dashboard — Web monitoring interface."""
+import os, sys, json, sqlite3, subprocess
+from datetime import datetime, timedelta
+from flask import Flask, render_template, jsonify, request
+import pandas as pd
+import numpy as np
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, BASE_DIR)
+
+import trading
+import yaml
+
+with open(os.path.join(BASE_DIR, "config.yaml")) as f:
+    CFG = yaml.safe_load(f)
+
+app = Flask(__name__)
+
+# Simple TTL cache
+_cache = {}
+_cache_ttl = {}
+
+def _cached(key, ttl_seconds, func):
+    """Return cached value or compute and cache."""
+    now = datetime.now().timestamp()
+    if key in _cache and now - _cache_ttl.get(key, 0) < ttl_seconds:
+        return _cache[key]
+    val = func()
+    _cache[key] = val
+    _cache_ttl[key] = now
+    return val
+
+
+# ========== HELPERS ==========
+
+def _db_query(sql, params=()):
+    conn = sqlite3.connect(trading.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def _db_query_one(sql, params=()):
+    conn = sqlite3.connect(trading.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(sql, params).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def _load_model(tf="daily"):
+    import joblib
+    path = os.path.join(BASE_DIR, "xauusd_model.pkl" if tf == "daily" else "xauusd_model_4h.pkl")
+    if not os.path.exists(path):
+        return None
+    try:
+        return joblib.load(path)
+    except Exception:
+        return None
+
+
+def _get_live_price():
+    try:
+        from telegram_notifier import get_realtime_price
+        p = get_realtime_price()
+        return p if p and p.get("price") else None
+    except Exception:
+        return None
+
+
+def _tail_log(filename, n=50):
+    path = os.path.join(BASE_DIR, filename)
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        lines = f.readlines()[-n:]
+    result = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        level = "info"
+        if any(k in line for k in ["[RISK]", "Error", "CRITICAL", "[ALERT]"]):
+            level = "error"
+        elif any(k in line for k in ["[FILTER]", "[WARN]"]):
+            level = "warning"
+        elif any(k in line for k in ["[HEARTBEAT]", "terkirim", "OK"]):
+            level = "success"
+        result.append({"text": line, "level": level})
+    return result
+
+
+def _parse_log_timestamp(filename, pattern):
+    """Find last log line matching pattern and extract timestamp."""
+    path = os.path.join(BASE_DIR, filename)
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        for line in reversed(f.readlines()):
+            if pattern in line:
+                try:
+                    ts_str = line[1:20]  # [YYYY-MM-DD HH:MM:SS]
+                    return ts_str
+                except Exception:
+                    pass
+    return None
+
+
+def _last_log_time(filename):
+    """Get timestamp of last log entry."""
+    path = os.path.join(BASE_DIR, filename)
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        for line in reversed(f.readlines()):
+            line = line.strip()
+            if line and line.startswith("[") and len(line) > 20:
+                return line[1:20]
+    return None
+
+
+# ========== ROUTES ==========
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/api/status")
+def api_status():
+    def _compute():
+        import psutil
+        bot_alive = False
+        for p in psutil.process_iter(["cmdline"]):
+            try:
+                if p.info["cmdline"] and "auto_runner" in " ".join(p.info["cmdline"]) and "dashboard" not in " ".join(p.info["cmdline"]):
+                    bot_alive = True
+                    break
+            except Exception:
+                pass
+        live = _get_live_price()
+        hb = _parse_log_timestamp("auto_runner.log", "[HEARTBEAT]")
+        if not hb:
+            hb = _last_log_time("auto_runner.log")
+            if hb:
+                hb = hb + " (last activity)"
+        last_pred = _db_query_one("SELECT date, predicted_direction FROM predictions ORDER BY id DESC LIMIT 1")
+        try:
+            df = pd.read_csv(os.path.join(BASE_DIR, "xauusd_daily.csv"), parse_dates=["Date"])
+            last_data = df["Date"].max().strftime("%Y-%m-%d")
+            age_days = (datetime.now() - df["Date"].max()).days
+        except Exception:
+            last_data = "N/A"
+            age_days = -1
+        return {
+            "bot_alive": bot_alive, "live_price": live, "heartbeat": hb,
+            "last_prediction": last_pred, "last_data_date": last_data,
+            "data_age_days": age_days, "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    return jsonify(_cached("status", 15, _compute))
+
+
+@app.route("/api/overview")
+def api_overview():
+    # Simulation
+    sim = _db_query_one("SELECT balance, initial_balance FROM simulation WHERE active=1 ORDER BY id DESC LIMIT 1")
+
+    # Trade stats (daily + 4H combined)
+    daily_stats = _db_query_one("SELECT COUNT(*) as total, SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as wins, SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses FROM predictions WHERE outcome IS NOT NULL")
+    fourh_stats = _db_query_one("SELECT COUNT(*) as total, SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as wins, SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses FROM predictions_4h WHERE outcome IS NOT NULL")
+
+    total = (daily_stats["total"] or 0) + (fourh_stats["total"] or 0)
+    wins = (daily_stats["wins"] or 0) + (fourh_stats["wins"] or 0)
+    losses = (daily_stats["losses"] or 0) + (fourh_stats["losses"] or 0)
+
+    # Active positions
+    daily_active = _db_query("SELECT id, predicted_direction, confidence, sl, tp1, tp2 FROM predictions WHERE outcome IS NULL")
+    fourh_active = _db_query("SELECT id, predicted_direction, confidence, sl, tp1, tp2 FROM predictions_4h WHERE outcome IS NULL")
+
+    # Pending predictions
+    daily_pending = len(daily_active)
+    fourh_pending = len(fourh_active)
+
+    # Monthly return
+    monthly = _db_query("""
+        SELECT result_pct FROM predictions WHERE outcome IS NOT NULL
+        AND date >= date('now', '-30 days')
+        UNION ALL
+        SELECT result_pct FROM predictions_4h WHERE outcome IS NOT NULL
+        AND date >= date('now', '-30 days')
+    """)
+    monthly_return = sum(r["result_pct"] for r in monthly if r["result_pct"]) if monthly else 0
+
+    balance = sim["balance"] if sim else 0
+    initial = sim["initial_balance"] if sim else 0
+    pnl = round(balance - initial, 2) if sim else 0
+    ret_pct = round(pnl / initial * 100, 2) if initial else 0
+
+    return jsonify({
+        "balance": balance, "initial": initial, "pnl": pnl, "return_pct": ret_pct,
+        "total_trades": total, "wins": wins, "losses": losses,
+        "win_rate": round(wins / total * 100, 1) if total else 0,
+        "daily_pending": daily_pending, "fourh_pending": fourh_pending,
+        "active_positions": daily_active + fourh_active,
+        "monthly_return": round(monthly_return, 2),
+    })
+
+
+@app.route("/api/signals")
+def api_signals():
+    daily = _db_query_one("""
+        SELECT id, date, price, predicted_direction, confidence, threshold,
+               sl, tp1, tp2, entry_realtime, model_version, target_date
+        FROM predictions ORDER BY id DESC LIMIT 1
+    """)
+    fourh = _db_query_one("""
+        SELECT id, date, time, price, predicted_direction, confidence, threshold,
+               sl, tp1, tp2, entry_realtime, model_version, target_date, target_time
+        FROM predictions_4h ORDER BY id DESC LIMIT 1
+    """)
+
+    # Regime info
+    try:
+        df = pd.read_csv(os.path.join(BASE_DIR, "xauusd_daily.csv"), parse_dates=["Date"])
+        df.sort_values("Date", inplace=True)
+        df.set_index("Date", inplace=True)
+        from trading import compute_adx
+        adx, plus_di, minus_di = compute_adx(df["High"], df["Low"], df["Close"])
+        adx_val = float(adx.iloc[-1])
+        is_trending = adx_val > 25
+        # Daily trend
+        from trading import get_daily_trend
+        dt = get_daily_trend(df)
+        daily_trend_val = int(dt.iloc[-1])
+    except Exception:
+        adx_val = 0
+        is_trending = False
+        daily_trend_val = 0
+
+    return jsonify({
+        "daily": daily,
+        "fourh": fourh,
+        "regime": {"adx": round(adx_val, 1), "is_trending": is_trending, "daily_trend": daily_trend_val},
+    })
+
+
+@app.route("/api/equity")
+def api_equity():
+    trades = _db_query("""
+        SELECT balance_after, created_at FROM sim_trades ORDER BY id
+    """)
+    if not trades:
+        # Fallback: use predictions result_pct
+        preds = _db_query("""
+            SELECT result_pct, date FROM predictions WHERE outcome IS NOT NULL ORDER BY id
+        """)
+        if not preds:
+            return jsonify({"points": [], "initial": 100, "peak": 100})
+        equity = [100]
+        for p in preds:
+            equity.append(round(equity[-1] * (1 + (p["result_pct"] or 0) / 100), 2))
+        points = [{"date": preds[i]["date"], "balance": equity[i+1]} for i in range(len(preds))]
+        return jsonify({"points": points, "initial": 100, "peak": max(equity)})
+
+    points = [{"date": t["created_at"][:10], "balance": t["balance_after"]} for t in trades]
+    peak = max(t["balance_after"] for t in trades)
+    return jsonify({"points": points, "initial": trades[0]["balance_after"] - (trades[0]["balance_after"] - 100), "peak": peak})
+
+
+@app.route("/api/risk")
+def api_risk():
+    try:
+        from simulation import (check_drawdown_limit, check_weekly_loss_limit,
+                                 get_consecutive_losses, get_volatility_regime, check_max_concurrent)
+        dd_ok, dd_pct = check_drawdown_limit()
+        wl_ok, wl_pnl = check_weekly_loss_limit()
+        consec = get_consecutive_losses()
+        regime = get_volatility_regime()
+        mc_ok, mc_total = check_max_concurrent()
+    except Exception:
+        dd_ok, dd_pct = True, 0
+        wl_ok, wl_pnl = True, 0
+        consec = 0
+        regime = "unknown"
+        mc_ok, mc_total = True, 0
+
+    return jsonify({
+        "drawdown_pct": round(dd_pct * 100, 1),
+        "drawdown_ok": dd_ok,
+        "drawdown_limit": CFG["risk"]["max_drawdown_pct"] * 100,
+        "weekly_pnl": round(wl_pnl, 2),
+        "weekly_ok": wl_ok,
+        "weekly_limit_pct": CFG["risk"]["weekly_loss_limit_pct"] * 100,
+        "consecutive_losses": consec,
+        "cooldown_limit": CFG["risk"]["cooldown_after_losses"],
+        "volatility_regime": regime,
+        "max_concurrent": CFG["risk"]["max_concurrent_positions"],
+        "current_positions": mc_total,
+        "concurrent_ok": mc_ok,
+    })
+
+
+@app.route("/api/model")
+def api_model():
+    result = {}
+    for tf, path in [("daily", "xauusd_model.pkl"), ("4h", "xauusd_model_4h.pkl")]:
+        arts = _load_model(tf)
+        if arts:
+            result[tf] = {
+                "version": arts.get("model_version", "N/A"),
+                "train_date": arts.get("train_date", "N/A"),
+                "test_acc": round(arts.get("test_acc", 0) * 100, 1),
+                "oot_acc": round(arts.get("oot_acc", 0) * 100, 1) if arts.get("oot_acc") else None,
+                "f1": round(arts.get("f1", 0) * 100, 1),
+                "threshold": arts.get("best_thresh", arts.get("threshold", 0.55)),
+                "features": len(arts.get("feature_cols", arts.get("cols", []))),
+                "train_samples": arts.get("train_samples", arts.get("samples", 0)),
+                "n_classes": arts.get("n_classes", 3),
+                "fold_scores": arts.get("fold_scores", []),
+                "forward_days": arts.get("forward_days", arts.get("forward", 3)),
+            }
+        else:
+            result[tf] = None
+    return jsonify(result)
+
+
+@app.route("/api/trades")
+def api_trades():
+    daily = _db_query("""
+        SELECT id, 'Daily' as timeframe, date, price, predicted_direction as direction,
+               confidence, outcome, outcome_detail, result_pct, sl, tp1, tp2
+        FROM predictions ORDER BY id DESC
+    """)
+    fourh = _db_query("""
+        SELECT id, '4H' as timeframe, date || ' ' || time as date, price, predicted_direction as direction,
+               confidence, outcome, outcome_detail, result_pct, sl, tp1, tp2
+        FROM predictions_4h ORDER BY id DESC
+    """)
+    all_trades = sorted(daily + fourh, key=lambda x: x["id"], reverse=True)
+    return jsonify(all_trades)
+
+
+@app.route("/api/features")
+def api_features():
+    arts = _load_model("daily")
+    if not arts:
+        return jsonify({"features": []})
+    importance = arts.get("feature_importance", {})
+    if not importance:
+        return jsonify({"features": []})
+    sorted_features = sorted(importance.items(), key=lambda x: x[1], reverse=True)[:20]
+    return jsonify({"features": [{"name": k, "importance": round(v, 4)} for k, v in sorted_features]})
+
+
+@app.route("/api/montecarlo")
+def api_montecarlo():
+    def _compute():
+        try:
+            from monte_carlo import run_monte_carlo
+            mc = run_monte_carlo()
+            if mc:
+                return mc
+        except Exception:
+            pass
+        return None
+    return jsonify(_cached("montecarlo", 300, _compute))  # cache 5 min
+
+
+@app.route("/api/macro")
+def api_macro():
+    def _compute():
+        tickers = {
+            "DXY_Close": {"name": "DXY", "file": "dxy_daily.csv"},
+            "VIX_Close": {"name": "VIX", "file": "vix_daily.csv"},
+            "TIP_Close": {"name": "TIP (Real Yield)", "file": "tip_daily.csv"},
+            "Silver_Close": {"name": "Silver", "file": "silver_daily.csv"},
+            "BTC_Close": {"name": "Bitcoin", "file": "btc_daily.csv"},
+            "OIL_Close": {"name": "Crude Oil", "file": "oil_daily.csv"},
+            "SPY_Close": {"name": "S&P 500", "file": "spy_daily.csv"},
+            "US10Y_Close": {"name": "US 10Y", "file": "us10y_daily.csv"},
+            "Breakeven_10Y": {"name": "Inflation Exp", "file": "breakeven_10y.csv"},
+        }
+        result = []
+        for col, info in tickers.items():
+            csv_path = os.path.join(BASE_DIR, info["file"])
+            try:
+                df = pd.read_csv(csv_path, parse_dates=["Date"], index_col="Date")
+                if col in df.columns:
+                    s = df[col].dropna()
+                    if len(s) >= 2:
+                        result.append({
+                            "name": info["name"],
+                            "value": round(float(s.iloc[-1]), 2),
+                            "change": round(float(s.iloc[-1] - s.iloc[-2]), 2),
+                            "change_pct": round(float((s.iloc[-1] - s.iloc[-2]) / s.iloc[-2] * 100), 2),
+                        })
+            except Exception:
+                pass
+        return result
+    return jsonify(_cached("macro", 120, _compute))  # cache 2 min
+
+
+@app.route("/api/logs")
+def api_logs():
+    lines = _tail_log("auto_runner.log", 50)
+    return jsonify(lines)
+
+
+@app.route("/api/price_history")
+def api_price_history():
+    """Return OHLC data for XAUUSD price chart."""
+    days = request.args.get("days", 90, type=int)
+    try:
+        df = pd.read_csv(os.path.join(BASE_DIR, "xauusd_daily.csv"), parse_dates=["Date"])
+        df.sort_values("Date", inplace=True)
+        df = df.tail(days)
+        points = []
+        for _, row in df.iterrows():
+            points.append({
+                "date": row["Date"].strftime("%Y-%m-%d"),
+                "open": round(float(row["Open"]), 2),
+                "high": round(float(row["High"]), 2),
+                "low": round(float(row["Low"]), 2),
+                "close": round(float(row["Close"]), 2),
+            })
+        # Add technical levels for last bar
+        levels = trading.calculate_levels(df.set_index("Date"))
+        # Clean NaN values for JSON serialization
+        clean_levels = {}
+        for k, v in levels.items():
+            if v is not None and not (isinstance(v, float) and (v != v)):  # not NaN
+                clean_levels[k] = round(float(v), 2)
+        return jsonify({"points": points, "levels": clean_levels})
+    except Exception as e:
+        return jsonify({"points": [], "levels": {}, "error": str(e)})
+
+
+@app.route("/api/action", methods=["POST"])
+def api_action():
+    data = request.get_json()
+    action = data.get("action")
+    if not action:
+        return jsonify({"error": "No action specified"}), 400
+
+    p = sys.executable
+    try:
+        if action == "retrain_daily":
+            r = subprocess.run([p, os.path.join(BASE_DIR, "auto_runner.py"), "--retrain"],
+                               capture_output=True, text=True, cwd=BASE_DIR, timeout=600)
+            return jsonify({"ok": r.returncode == 0, "output": r.stdout[-500:] if r.stdout else r.stderr[-500:]})
+        elif action == "retrain_4h":
+            r = subprocess.run([p, os.path.join(BASE_DIR, "runner_4h.py"), "--retrain"],
+                               capture_output=True, text=True, cwd=BASE_DIR, timeout=600)
+            return jsonify({"ok": r.returncode == 0, "output": r.stdout[-500:] if r.stdout else r.stderr[-500:]})
+        elif action == "reset_sim":
+            r = subprocess.run([p, "-c", "import simulation as sim; sim.reset_sim(); print('OK')"],
+                               capture_output=True, text=True, cwd=BASE_DIR, timeout=30)
+            return jsonify({"ok": r.returncode == 0, "output": r.stdout.strip() or r.stderr[-300:]})
+        elif action == "start_sim":
+            balance = data.get("balance", 100)
+            r = subprocess.run([p, "-c", f"import simulation as sim; sim.start_sim({float(balance)}); print('OK')"],
+                               capture_output=True, text=True, cwd=BASE_DIR, timeout=30)
+            return jsonify({"ok": r.returncode == 0, "output": r.stdout.strip() or r.stderr[-300:]})
+        elif action == "evaluate":
+            r = subprocess.run([p, "-c",
+                "from auto_runner import evaluate_past_predictions; n = evaluate_past_predictions(); print(f'Evaluated {n} predictions')"],
+                capture_output=True, text=True, cwd=BASE_DIR, timeout=120)
+            return jsonify({"ok": r.returncode == 0, "output": r.stdout.strip()[-500:] if r.returncode == 0 else r.stderr[-500:]})
+        elif action == "predict":
+            r = subprocess.run([p, "-c",
+                "from auto_runner import run_prediction_job; pid = run_prediction_job(); print(f'Prediction ID: {pid}')"],
+                capture_output=True, text=True, cwd=BASE_DIR, timeout=120)
+            return jsonify({"ok": r.returncode == 0, "output": r.stdout.strip()[-500:] if r.returncode == 0 else r.stderr[-500:]})
+        else:
+            return jsonify({"error": f"Unknown action: {action}"}), 400
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Action timed out"}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+if __name__ == "__main__":
+    print("=" * 50)
+    print("  XAUUSD Trading Dashboard")
+    print(f"  http://localhost:5050")
+    print("=" * 50)
+    app.run(host="0.0.0.0", port=5050, debug=False)
