@@ -717,7 +717,7 @@ def should_retrain():
 
 # ========== DAEMON ==========
 def run_daemon(interval_hours=4):
-    log(f"AUTO RUNNER V2 started (interval: {interval_hours} jam)")
+    log(f"AUTO RUNNER V2 started (fast=60s, slow={interval_hours}h)")
     import threading
     try:
         from telegram_notifier import process_commands
@@ -735,107 +735,113 @@ def run_daemon(interval_hours=4):
         log(f"Polling thread error: {e}")
     last_monthly = ""
     last_heartbeat = datetime.now() - timedelta(hours=7)
-    last_trailing = datetime.now() - timedelta(hours=1)
+    last_slow = datetime.now() - timedelta(hours=interval_hours)
+    last_pred_date = None
+
     while not _shutdown:
         try:
-            # Data validation
+            now = datetime.now()
+
+            # === FAST LOOP (every 60s): prediction + trailing stops ===
             try:
-                from data_validator import validate_and_report
-                _, issues = validate_and_report(os.path.join(trading.BASE_DIR, "xauusd_daily.csv"))
-                if any("STALE" in i or "INVALID" in i for i in issues):
-                    log(f"[WARN] Data quality issues: {issues}")
-            except Exception as e:
-                log(f"[WARN] Data validation error: {e}")
+                today = now.strftime("%Y-%m-%d")
+                if today != last_pred_date:
+                    log("New day detected — generating prediction...")
+                    run_prediction_job()
+                    last_pred_date = today
 
-            # Risk management checks (Phase 3)
-            try:
-                from simulation import check_drawdown_limit, check_weekly_loss_limit, get_consecutive_losses, check_max_concurrent
-                dd_ok, dd_pct = check_drawdown_limit()
-                if not dd_ok:
-                    log(f"[RISK] Max drawdown breached ({dd_pct:.1%}). Pausing.")
-                    telegram_notifier._send_telegram(f"<b>[RISK]</b> Max drawdown {dd_pct:.1%}. Trading paused.")
-                    time.sleep(interval_hours * 3600)
-                    continue
-                wl_ok, wl_pnl = check_weekly_loss_limit()
-                if not wl_ok:
-                    log(f"[RISK] Weekly loss limit breached (${wl_pnl:.2f}). Pausing.")
-                    telegram_notifier._send_telegram(f"<b>[RISK]</b> Weekly loss ${wl_pnl:.2f}. Trading paused.")
-                    time.sleep(interval_hours * 3600)
-                    continue
-                consec = get_consecutive_losses()
-                if consec >= 3:
-                    log(f"[RISK] {consec} consecutive losses. Cooldown.")
-                    time.sleep(interval_hours * 3600)
-                    continue
-            except Exception as e:
-                log(f"[RISK] Risk check error: {e}")
-                telegram_notifier._send_telegram(f"<b>[RISK]</b> Risk check failed: {str(e)[:100]}")
-
-            # Evaluate + retrain + predict
-            evaluated = evaluate_past_predictions()
-            if should_retrain() or evaluated >= 10:
-                retrain_model()
-            run_prediction_job()
-            show_learning_stats()
-
-            # 4H runner
-            _run_4h_cycle()
-
-            # Trailing stops (Phase 5.2) - check every cycle
-            try:
+                # Trailing stops
                 from trailing_stop import manage_trailing_stops
                 updated = manage_trailing_stops()
                 if updated > 0:
                     log(f"[TRAIL] Updated {updated} trailing stops")
             except Exception as e:
-                log(f"[TRAIL] Trailing stop error: {e}")
+                log(f"[FAST] Error: {e}")
 
-            # Model health check (Phase 4.2)
-            try:
-                _check_model_health()
-            except Exception as e:
-                log(f"[ALERT] Model health check error: {e}")
+            # === SLOW LOOP (every N hours): evaluate + retrain + 4H + risk ===
+            if (now - last_slow).total_seconds() >= interval_hours * 3600:
+                log("=" * 55)
 
-            # Monthly report
-            month_key = datetime.now().strftime("%Y-%m")
-            if month_key != last_monthly:
-                monthly_report()
-                # Monte Carlo report
+                # Data validation
                 try:
-                    from monte_carlo import run_monte_carlo, format_mc_report
-                    mc = run_monte_carlo()
-                    if mc:
-                        telegram_notifier._send_telegram(f"<b>[MONTE CARLO]</b>\n<pre>{format_mc_report(mc)}</pre>")
+                    from data_validator import validate_and_report
+                    _, issues = validate_and_report(os.path.join(trading.BASE_DIR, "xauusd_daily.csv"))
+                    if any("STALE" in i or "INVALID" in i for i in issues):
+                        log(f"[WARN] Data quality issues: {issues}")
                 except Exception as e:
-                    log(f"[MC] Monte Carlo error: {e}")
-                last_monthly = month_key
+                    log(f"[WARN] Data validation error: {e}")
 
-            # Heartbeat (Phase 4.1)
-            if (datetime.now() - last_heartbeat).total_seconds() > 6 * 3600:
+                # Risk management
                 try:
-                    from simulation import get_active_sim, get_consecutive_losses
-                    sim = get_active_sim()
-                    bal = f"${sim[1]:.2f}" if sim else "N/A"
-                    cl = get_consecutive_losses()
-                    msg = (
-                        f"<b>[HEARTBEAT]</b>\n"
-                        f"  Status: Alive\n"
-                        f"  Balance: {bal}\n"
-                        f"  Consec losses: {cl}\n"
-                        f"  Next: {(datetime.now() + timedelta(hours=interval_hours)).strftime('%H:%M')}"
-                    )
-                    telegram_notifier._send_telegram(msg)
-                    log(f"[HEARTBEAT] Alive | Balance: {bal} | Consec losses: {cl}")
-                    last_heartbeat = datetime.now()
+                    from simulation import check_drawdown_limit, check_weekly_loss_limit, get_consecutive_losses
+                    dd_ok, dd_pct = check_drawdown_limit()
+                    if not dd_ok:
+                        log(f"[RISK] Max drawdown breached ({dd_pct:.1%}).")
+                        telegram_notifier._send_telegram(f"<b>[RISK]</b> Max drawdown {dd_pct:.1%}.")
+                    wl_ok, wl_pnl = check_weekly_loss_limit()
+                    if not wl_ok:
+                        log(f"[RISK] Weekly loss limit breached (${wl_pnl:.2f}).")
+                        telegram_notifier._send_telegram(f"<b>[RISK]</b> Weekly loss ${wl_pnl:.2f}.")
                 except Exception as e:
-                    log(f"[HEARTBEAT] Heartbeat error: {e}")
+                    log(f"[RISK] Risk check error: {e}")
 
-            log(f"Tidur {interval_hours} jam...")
-            log("-" * 55)
-            for _ in range(interval_hours * 360):
+                # Evaluate + retrain
+                evaluated = evaluate_past_predictions()
+                if should_retrain() or evaluated >= 10:
+                    retrain_model()
+                show_learning_stats()
+
+                # 4H runner
+                _run_4h_cycle()
+
+                # Model health check
+                try:
+                    _check_model_health()
+                except Exception as e:
+                    log(f"[ALERT] Model health check error: {e}")
+
+                # Monthly report
+                month_key = now.strftime("%Y-%m")
+                if month_key != last_monthly:
+                    monthly_report()
+                    try:
+                        from monte_carlo import run_monte_carlo, format_mc_report
+                        mc = run_monte_carlo()
+                        if mc:
+                            telegram_notifier._send_telegram(f"<b>[MONTE CARLO]</b>\n<pre>{format_mc_report(mc)}</pre>")
+                    except Exception as e:
+                        log(f"[MC] Monte Carlo error: {e}")
+                    last_monthly = month_key
+
+                # Heartbeat
+                if (now - last_heartbeat).total_seconds() > 6 * 3600:
+                    try:
+                        from simulation import get_active_sim, get_consecutive_losses
+                        sim = get_active_sim()
+                        bal = f"${sim[1]:.2f}" if sim else "N/A"
+                        cl = get_consecutive_losses()
+                        msg = (
+                            f"<b>[HEARTBEAT]</b>\n"
+                            f"  Status: Alive\n"
+                            f"  Balance: {bal}\n"
+                            f"  Consec losses: {cl}\n"
+                            f"  Next slow: {(now + timedelta(hours=interval_hours)).strftime('%H:%M')}"
+                        )
+                        telegram_notifier._send_telegram(msg)
+                        log(f"[HEARTBEAT] Alive | Balance: {bal} | Consec losses: {cl}")
+                        last_heartbeat = now
+                    except Exception as e:
+                        log(f"[HEARTBEAT] Heartbeat error: {e}")
+
+                last_slow = now
+                log("-" * 55)
+
+            # Sleep 60s between fast loop iterations
+            for _ in range(6):
                 if _shutdown:
                     break
                 time.sleep(10)
+
         except KeyboardInterrupt:
             log("Stopped.")
             break
@@ -845,7 +851,7 @@ def run_daemon(interval_hours=4):
                 telegram_notifier._send_telegram(f"<b>[ERROR]</b> {str(e)[:200]}")
             except Exception:
                 pass
-            time.sleep(300)
+            time.sleep(60)
     log("Daemon stopped gracefully.")
 
 
