@@ -425,28 +425,30 @@ def run_prediction_job():
     target_date = (latest_date + timedelta(days=forward_days)).strftime("%Y-%m-%d")
     log(f"Hasil: ${latest_price:.2f} | {direction} | conf: {confidence:.1%} | thresh: {min_thresh:.3f} | target: {target_date}")
 
-    # Regime filter (Phase 2.5): skip signals in low-ADX ranging market
+    # Regime filter (Phase 2.5): skip signals in very low-ADX ranging market
+    adx_passed = True
     if direction != "NO_TRADE":
         try:
             adx_val = df["ADX_14"].iloc[-1] if "ADX_14" in df.columns else None
-            if adx_val is not None and adx_val < 18:
+            if adx_val is not None and adx_val < 20:
                 log(f"[FILTER] Low ADX ({adx_val:.1f}): ranging market, skipping signal")
                 direction = "NO_TRADE"
+                adx_passed = False
         except Exception:
             pass
 
-    # Multi-timeframe confirmation (Phase 2.2): check daily trend
-    if direction != "NO_TRADE":
-        try:
-            dt_val = daily_trend.iloc[-1] if len(daily_trend) > 0 else 0
-            if direction.startswith("BUY") and dt_val == -1:
-                log(f"[FILTER] BUY rejected: daily trend bearish")
-                direction = "NO_TRADE"
-            elif direction.startswith("SELL") and dt_val == 1:
-                log(f"[FILTER] SELL rejected: daily trend bullish")
-                direction = "NO_TRADE"
-        except Exception:
-            pass
+    # Multi-timeframe confirmation (Phase 2.2): disabled — model already uses daily data
+    # if direction != "NO_TRADE" and adx_passed:
+    #     try:
+    #         dt_val = daily_trend.iloc[-1] if len(daily_trend) > 0 else 0
+    #         if direction.startswith("BUY") and dt_val == -1:
+    #             log(f"[FILTER] BUY rejected: daily trend bearish")
+    #             direction = "NO_TRADE"
+    #         elif direction.startswith("SELL") and dt_val == 1:
+    #             log(f"[FILTER] SELL rejected: daily trend bullish")
+    #             direction = "NO_TRADE"
+    #     except Exception:
+    #         pass
 
     # SHAP top drivers (Phase 2.4)
     top_features = []
@@ -869,7 +871,7 @@ def _run_4h_cycle():
             for line in r.stdout.strip().split("\n"):
                 log(f"[4H] {line.strip()}")
         elif r.returncode != 0:
-            log(f"[4H] Error: {r.stderr[:200]}")
+            log(f"[4H] Error: {r.stderr[:1000]}")
     except subprocess.TimeoutExpired:
         log("[4H] Runner timeout")
     except Exception as e:

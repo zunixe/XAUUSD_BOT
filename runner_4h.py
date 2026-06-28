@@ -60,7 +60,10 @@ def update_data():
     df.sort_index(inplace=True)
     try:
         old = pd.read_csv(trading.CSV_4H, parse_dates=["Date"], index_col="Date")
-        old.index = pd.to_datetime(old.index, utc=True).tz_localize(None)
+        if old.index.tz is not None:
+            old.index = old.index.tz_localize(None)
+        if df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
         combined = pd.concat([old, df])
         combined = combined[~combined.index.duplicated(keep="last")]
         combined.sort_index(inplace=True)
