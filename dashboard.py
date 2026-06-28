@@ -198,9 +198,9 @@ def api_overview():
     wins = (daily_stats["wins"] or 0) + (fourh_stats["wins"] or 0)
     losses = (daily_stats["losses"] or 0) + (fourh_stats["losses"] or 0)
 
-    # Active positions
-    daily_active = _db_query("SELECT id, predicted_direction, confidence, sl, tp1, tp2 FROM predictions WHERE outcome IS NULL")
-    fourh_active = _db_query("SELECT id, predicted_direction, confidence, sl, tp1, tp2 FROM predictions_4h WHERE outcome IS NULL")
+    # Active positions (only BUY/SELL, not NO_TRADE)
+    daily_active = _db_query("SELECT id, predicted_direction, confidence, sl, tp1, tp2 FROM predictions WHERE outcome IS NULL AND predicted_direction != 'NO_TRADE'")
+    fourh_active = _db_query("SELECT id, predicted_direction, confidence, sl, tp1, tp2 FROM predictions_4h WHERE outcome IS NULL AND predicted_direction != 'NO_TRADE'")
 
     # Pending predictions
     daily_pending = len(daily_active)
