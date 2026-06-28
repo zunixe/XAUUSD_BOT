@@ -389,10 +389,10 @@ def _handle_command(text, chat_id, token):
                 live = get_realtime_price()
                 curr = live["price"] if live and live.get("price") else None
                 daily_active = c.execute(
-                    "SELECT id, price, predicted_direction, sl, tp1, tp2, entry_realtime FROM predictions WHERE date LIKE ? AND outcome IS NULL",
+                    "SELECT id, price, predicted_direction, sl, tp1, tp2, entry_realtime FROM predictions WHERE date LIKE ? AND outcome IS NULL AND predicted_direction != 'NO_TRADE'",
                     (f"{this_month}%",)).fetchall()
                 fourh_active = c.execute(
-                    "SELECT id, predicted_direction, entry_realtime, sl, tp1 FROM predictions_4h WHERE date LIKE ? AND outcome IS NULL",
+                    "SELECT id, predicted_direction, entry_realtime, sl, tp1 FROM predictions_4h WHERE date LIKE ? AND outcome IS NULL AND predicted_direction != 'NO_TRADE'",
                     (f"{this_month}%",)).fetchall()
                 d_hit_sl = d_hit_tp = 0
                 for row in daily_active:
