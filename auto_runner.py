@@ -274,7 +274,7 @@ def retrain_model():
     fold_weights = np.array([max(s["f1"], 0.01) for s in scores])
     fold_weights = fold_weights / fold_weights.sum()
     ensemble_models = list(zip(models, fold_weights))
-    best_thresh = 0.55
+    best_thresh = trading.CFG.get("model", {}).get("min_threshold", 0.55)
 
     # --- FEEDBACK LOOP (min 30 evaluations) ---
     try:
@@ -299,7 +299,7 @@ def retrain_model():
             elif hist_acc < 0.55:
                 best_thresh = min(best_thresh + 0.03, 0.65)
             elif hist_acc >= 0.65:
-                best_thresh = max(best_thresh - 0.02, 0.55)
+                best_thresh = max(best_thresh - 0.02, 0.45)
         else:
             log(f"[LEARN] Feedback loop: butuh 30+ evaluasi (baru {len(journal_df) if 'journal_df' in dir() else 0})")
     except Exception as e:
@@ -401,7 +401,7 @@ def run_prediction_job():
         for m, w in ensemble_models:
             probs += w * m.predict_proba(features_scaled)[0]
         prob_bearish, prob_neutral, prob_bullish = probs
-        min_thresh = max(0.55, best_thresh)
+        min_thresh = max(trading.CFG.get("model", {}).get("min_threshold", 0.55), best_thresh)
         if prob_bullish >= min_thresh:
             direction = "BUY (Bullish)"
             confidence = prob_bullish
@@ -415,7 +415,7 @@ def run_prediction_job():
     else:
         # Legacy binary model fallback
         prob = float(sum(w * m.predict_proba(features_scaled)[0, 1] for m, w in ensemble_models))
-        min_thresh = max(0.55, best_thresh)
+        min_thresh = max(trading.CFG.get("model", {}).get("min_threshold", 0.55), best_thresh)
         sell_thresh = 1.0 - min_thresh
         direction = "BUY (Bullish)" if prob >= min_thresh else "SELL (Bearish)" if prob <= sell_thresh else "NO_TRADE"
         confidence = prob
