@@ -401,7 +401,7 @@ def run_prediction_job():
         for m, w in ensemble_models:
             probs += w * m.predict_proba(features_scaled)[0]
         prob_bearish, prob_neutral, prob_bullish = probs
-        min_thresh = max(trading.CFG.get("model", {}).get("min_threshold", 0.55), best_thresh)
+        min_thresh = min(trading.CFG.get("model", {}).get("min_threshold", 0.55), best_thresh)
         if prob_bullish >= min_thresh:
             direction = "BUY (Bullish)"
             confidence = prob_bullish
@@ -415,7 +415,7 @@ def run_prediction_job():
     else:
         # Legacy binary model fallback
         prob = float(sum(w * m.predict_proba(features_scaled)[0, 1] for m, w in ensemble_models))
-        min_thresh = max(trading.CFG.get("model", {}).get("min_threshold", 0.55), best_thresh)
+        min_thresh = min(trading.CFG.get("model", {}).get("min_threshold", 0.55), best_thresh)
         sell_thresh = 1.0 - min_thresh
         direction = "BUY (Bullish)" if prob >= min_thresh else "SELL (Bearish)" if prob <= sell_thresh else "NO_TRADE"
         confidence = prob
