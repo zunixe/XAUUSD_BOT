@@ -218,7 +218,34 @@ def api_overview():
 
     balance = sim["balance"] if sim else 0
     initial = sim["initial_balance"] if sim else 0
-    pnl = round(balance - initial, 2) if sim else 0
+
+    # Unrealized P&L for active positions
+    unrealized_pnl = 0
+    live_price = None
+    try:
+        from telegram_notifier import get_realtime_price
+        rp = get_realtime_price()
+        if rp and rp.get("price"):
+            live_price = rp["price"]
+    except Exception:
+        pass
+
+    if live_price and balance > 0:
+        XAU_USD_PER_MOVE = 1.0
+        from simulation import calc_lot_size
+        for pos in daily_active + fourh_active:
+            entry = pos.get("entry_realtime") or live_price
+            sl = pos.get("sl")
+            if not entry or not sl:
+                continue
+            is_buy = "BUY" in (pos.get("predicted_direction") or "")
+            lot, _ = calc_lot_size(balance, entry, sl)
+            if lot > 0:
+                price_diff = (live_price - entry) if is_buy else (entry - live_price)
+                unrealized_pnl += lot * price_diff * XAU_USD_PER_MOVE
+
+    effective_balance = round(balance + unrealized_pnl, 2)
+    pnl = round(effective_balance - initial, 2) if sim else 0
     ret_pct = round(pnl / initial * 100, 2) if initial else 0
 
     return jsonify({
