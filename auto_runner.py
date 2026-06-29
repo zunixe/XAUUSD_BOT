@@ -742,13 +742,16 @@ def run_daemon(interval_hours=4):
         try:
             now = datetime.now()
 
-            # === FAST LOOP (every 60s): prediction + trailing stops ===
+            # === FAST LOOP (every 60s): daily + 4H prediction + trailing stops ===
             try:
                 today = now.strftime("%Y-%m-%d")
                 if today != last_pred_date:
                     log("New day detected — generating prediction...")
                     run_prediction_job()
                     last_pred_date = today
+
+                # 4H prediction (check if new 4H candle available)
+                _run_4h_cycle()
 
                 # Trailing stops
                 from trailing_stop import manage_trailing_stops
