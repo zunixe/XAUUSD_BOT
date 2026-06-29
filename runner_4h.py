@@ -212,7 +212,7 @@ def retrain():
     fold_weights = np.array([max(s["f1"], 0.01) for s in scores])
     fold_weights = fold_weights / fold_weights.sum()
     ensemble_models = list(zip(models, fold_weights))
-    best_thresh = 0.55
+    best_thresh = trading.CFG.get("model", {}).get("min_threshold", 0.55)
     avg_acc = np.mean([s["acc"] for s in scores])
 
     oot_acc = None
@@ -275,7 +275,7 @@ def predict():
         return None
 
     features_scaled = scaler.transform(last_row.values)
-    min_thresh = max(0.55, best_thresh)
+    min_thresh = min(trading.CFG.get("model", {}).get("min_threshold", 0.55), best_thresh)
 
     if n_classes == 3:
         probs = np.zeros(n_classes)
