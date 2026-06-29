@@ -816,18 +816,28 @@ def run_daemon(interval_hours=4):
                         log(f"[MC] Monte Carlo error: {e}")
                     last_monthly = month_key
 
-                # Heartbeat
-                if (now - last_heartbeat).total_seconds() > 6 * 3600:
+                # Heartbeat (every 30 min)
+                if (now - last_heartbeat).total_seconds() > 30 * 60:
                     try:
                         from simulation import get_active_sim, get_consecutive_losses
                         sim = get_active_sim()
                         bal = f"${sim[1]:.2f}" if sim else "N/A"
                         cl = get_consecutive_losses()
+                        # Count active positions
+                        import sqlite3 as _hb_sql
+                        _conn = _hb_sql.connect(trading.DB_FILE)
+                        d_active = _conn.execute("SELECT COUNT(*) FROM predictions WHERE outcome IS NULL AND predicted_direction != 'NO_TRADE'").fetchone()[0]
+                        h_active = _conn.execute("SELECT COUNT(*) FROM predictions_4h WHERE outcome IS NULL AND predicted_direction != 'NO_TRADE'").fetchone()[0]
+                        d_total = _conn.execute("SELECT COUNT(*) FROM predictions WHERE predicted_direction != 'NO_TRADE'").fetchone()[0]
+                        h_total = _conn.execute("SELECT COUNT(*) FROM predictions_4h WHERE predicted_direction != 'NO_TRADE'").fetchone()[0]
+                        _conn.close()
                         msg = (
                             f"<b>[HEARTBEAT]</b>\n"
                             f"  Status: Alive\n"
                             f"  Balance: {bal}\n"
                             f"  Consec losses: {cl}\n"
+                            f"  Daily: {d_active} active / {d_total} total\n"
+                            f"  4H: {h_active} active / {h_total} total\n"
                             f"  Next slow: {(now + timedelta(hours=interval_hours)).strftime('%H:%M')}"
                         )
                         telegram_notifier._send_telegram(msg)
