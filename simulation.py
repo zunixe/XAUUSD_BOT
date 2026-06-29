@@ -15,7 +15,7 @@ with open(os.path.join(BASE_DIR, "config.yaml")) as f:
 
 RISK_PCT = CFG["risk"]["risk_per_trade"]
 MAX_RISK_PCT = CFG["risk"]["max_risk_pct"]
-MIN_LOT = 0.01
+MIN_LOT = 0.00001
 XAU_USD_PER_MOVE = 100
 SPREAD = CFG["evaluation"]["spread"]
 
@@ -188,7 +188,7 @@ def calc_lot_size(balance, entry, sl):
     regime_mult = CFG["volatility_regime"]
     mult = {"low": regime_mult["low_mult"], "normal": regime_mult["normal_mult"],
             "high": regime_mult["high_mult"], "extreme": regime_mult["extreme_mult"]}
-    lot = round(lot * mult.get(regime, 1.0), 2)
+    lot = round(lot * mult.get(regime, 1.0), 5)
 
     if lot < MIN_LOT:
         return 0, 0
