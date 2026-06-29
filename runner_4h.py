@@ -319,8 +319,8 @@ def predict():
 
     conn = sqlite3.connect(trading.DB_FILE)
     c = conn.cursor()
-    # Skip if already predicted same direction for this candle time
-    existing = c.execute("SELECT id, predicted_direction FROM predictions_4h WHERE date=? AND time=?",
+    # Skip if already predicted same direction for this candle time (check latest only)
+    existing = c.execute("SELECT id, predicted_direction FROM predictions_4h WHERE date=? AND time=? ORDER BY id DESC LIMIT 1",
                          (latest_time.strftime("%Y-%m-%d"), latest_time.strftime("%H:%M"))).fetchone()
     if existing and existing[1] == direction:
         conn.close()
