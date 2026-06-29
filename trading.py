@@ -100,9 +100,9 @@ def evaluate_sl_tp(df, entry_idx, entry_price, sl, tp1, tp2, is_buy, max_lookahe
     final_close = float(segment["Close"].iloc[-1]) if len(segment) > 0 else entry_price
     pct = (final_close - entry_price) / entry_price * 100
     if is_buy:
-        outcome = "EXPIRED"
+        outcome = "WIN" if pct > 0 else "LOSS"
     else:
-        outcome = "EXPIRED"
+        outcome = "WIN" if pct < 0 else "LOSS"
         pct = -pct
     return outcome, "EXPIRED", final_close, pct
 

@@ -393,6 +393,8 @@ def evaluate():
                 max_look = min(FORWARD_BARS + 4, len(df) - entry_idx - 1)
                 outcome, detail, exit_price, pct = trading.evaluate_sl_tp(
                     df, entry_idx, entry, sl, tp1, tp2, is_buy, max_lookahead=max_look)
+                if detail == "EXPIRED":
+                    continue
             c.execute("UPDATE predictions_4h SET outcome=?, outcome_detail=?, result_pct=? WHERE id=?",
                       (outcome, detail, pct, pred_id))
             log(f"  #{pred_id}: {outcome} ({detail}) {pct:+.2f}%")

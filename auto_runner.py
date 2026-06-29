@@ -538,6 +538,8 @@ def evaluate_past_predictions():
                 outcome, detail, exit_price, pct = trading.evaluate_sl_tp(
                     df, entry_idx, entry_price, sl, tp1, tp2, is_buy, max_lookahead=10
                 )
+                if detail == "EXPIRED":
+                    continue
                 c.execute("UPDATE predictions SET outcome=?, result_pct=?, outcome_detail=? WHERE id=?",
                           (outcome, pct, detail, pred_id))
                 hit = f"{detail} @ ${exit_price:.2f}"
@@ -593,8 +595,6 @@ def monthly_report():
     now = pd.Timestamp.now()
     month_ago = now - timedelta(days=30)
     month = df[df["date"] >= month_ago]
-    # Exclude EXPIRED from stats
-    month = month[month["outcome"] != "EXPIRED"]
     if len(month) == 0:
         return
     wins = len(month[month["outcome"] == "WIN"])
@@ -631,29 +631,24 @@ def show_learning_stats():
 
     total = len(df)
     evaluated = df[df["outcome"].notna()]
-    # Exclude EXPIRED from WIN/LOSS stats
-    evaluated_wl = evaluated[evaluated["outcome"].isin(["WIN", "LOSS"])]
-    expired_count = len(evaluated[evaluated["outcome"] == "EXPIRED"])
     uneval = df[df["outcome"].isna()]
 
     print(f"\n{'='*55}")
     print(f"  LEARNING REPORT - {datetime.now().strftime('%d %b %Y %H:%M')}")
     print(f"{'='*55}")
 
-    if len(evaluated_wl) > 0:
-        wins = len(evaluated_wl[evaluated_wl["outcome"] == "WIN"])
-        losses = len(evaluated_wl) - wins
-        acc = wins / len(evaluated_wl) * 100
-        avg_return = evaluated_wl["result_pct"].mean()
-        total_return = evaluated_wl["result_pct"].sum()
-        profit_factor = abs(evaluated_wl[evaluated_wl["result_pct"] > 0]["result_pct"].sum() /
-                          (evaluated_wl[evaluated_wl["result_pct"] < 0]["result_pct"].sum() + 1e-10))
+    if len(evaluated) > 0:
+        wins = len(evaluated[evaluated["outcome"] == "WIN"])
+        losses = len(evaluated) - wins
+        acc = wins / len(evaluated) * 100
+        avg_return = evaluated["result_pct"].mean()
+        total_return = evaluated["result_pct"].sum()
+        profit_factor = abs(evaluated[evaluated["result_pct"] > 0]["result_pct"].sum() /
+                          (evaluated[evaluated["result_pct"] < 0]["result_pct"].sum() + 1e-10))
 
         print(f"  Total prediksi      : {total}")
         print(f"  Sudah dievaluasi    : {len(evaluated)} ({len(uneval)} pending)")
-        if expired_count > 0:
-            print(f"  EXPIRED (excl. stats): {expired_count}")
-        print(f"  Akurasi (WIN/LOSS)  : {acc:.1f}% ({wins}W / {losses}L)")
+        print(f"  Akurasi             : {acc:.1f}% ({wins}W / {losses}L)")
         print(f"  Rata-rata return    : {avg_return:+.2f}%")
         print(f"  Total return        : {total_return:+.2f}%")
         print(f"  Profit factor       : {profit_factor:.2f}")
@@ -663,7 +658,7 @@ def show_learning_stats():
         print(f"  PERFORMANCE BY CONFIDENCE:")
         brackets = [(0.5, 0.6), (0.6, 0.7), (0.7, 0.8), (0.8, 1.0)]
         for lo, hi in brackets:
-            subset = evaluated_wl[(evaluated_wl["confidence"] >= lo) & (evaluated_wl["confidence"] < hi)]
+            subset = evaluated[(evaluated["confidence"] >= lo) & (evaluated["confidence"] < hi)]
             if len(subset) >= 3:
                 w = len(subset[subset["outcome"] == "WIN"])
                 r = subset["result_pct"].mean()
@@ -672,12 +667,12 @@ def show_learning_stats():
         print(f"  Total prediksi: {total} (belum ada yang dievaluasi)")
 
     # Jika cukup data, rekomendasi threshold
-    if len(evaluated_wl) >= 10:
+    if len(evaluated) >= 10:
         best_profit = -999
         best_t = 0.5
         best_wr = 0.0
         for t in np.arange(0.5, 0.90, 0.025):
-            subset = evaluated_wl[evaluated_wl["confidence"] >= t]
+            subset = evaluated[evaluated["confidence"] >= t]
             if len(subset) >= 3:
                 w = len(subset[subset["outcome"] == "WIN"])
                 ret = subset["result_pct"].sum()
@@ -688,8 +683,8 @@ def show_learning_stats():
         print(f"  Threshold rekomendasi : {best_t:.3f} (win rate: {best_wr:.0%}, profit: {best_profit:+.2f}%)")
 
     print(f"\n  TARGET: Akurasi >= 80%")
-    if len(evaluated_wl) >= 10:
-        high_conf = evaluated_wl[evaluated_wl["confidence"] >= 0.7]
+    if len(evaluated) >= 10:
+        high_conf = evaluated[evaluated["confidence"] >= 0.7]
         if len(high_conf) >= 5:
             w = len(high_conf[high_conf["outcome"] == "WIN"])
             print(f"  Progress: {w}/{len(high_conf)} ({w/len(high_conf)*100:.0f}%) pada confidence >= 70%")
@@ -697,7 +692,7 @@ def show_learning_stats():
             print(f"  Progress: butuh lebih banyak data high-confidence (baru {len(high_conf)} prediksi >=70%)")
         print(f"  Estimasi: ~50-100 prediksi terkumpul untuk threshold optimal")
     else:
-        print(f"  Progress: baru {len(evaluated_wl)} prediksi dievaluasi (butuh >=10)")
+        print(f"  Progress: baru {len(evaluated)} prediksi dievaluasi (butuh >=10)")
     print(f"{'='*55}")
 
 # ========== AUTO-RETRAIN CHECK ==========
