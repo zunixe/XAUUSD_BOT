@@ -151,7 +151,7 @@ def adjust_lot_for_correlation(lot, direction):
             if dir_str and direction[:3] in dir_str:
                 same_dir += 1
     if same_dir > 0:
-        lot = round(lot * 0.5, 2)
+        lot = round(lot * 0.5, 5)
     return max(lot, MIN_LOT)
 
 
