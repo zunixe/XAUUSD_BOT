@@ -489,6 +489,5 @@ if __name__ == "__main__":
         update_data()
         evaluate()
         predict()
-        weekly_report()
     else:
         print("Usage: python runner_4h.py --run | --retrain | --predict | --evaluate | --report")
