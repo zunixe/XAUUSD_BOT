@@ -407,7 +407,7 @@ def notify_outcomes():
         SELECT id, price, predicted_direction, confidence, outcome, outcome_detail, result_pct,
                sl, tp1, tp2
         FROM predictions_4h
-        WHERE outcome IS NOT NULL AND notified = 0
+        WHERE outcome NOT IN ('SKIP', 'NO_TRADE') AND notified = 0
     """).fetchall()
     if not rows:
         conn.close()

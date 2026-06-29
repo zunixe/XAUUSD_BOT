@@ -563,7 +563,7 @@ def _notify_daily_outcomes():
     rows = c.execute("""
         SELECT id, price, predicted_direction, confidence, outcome, outcome_detail, result_pct,
                sl, tp1, tp2
-        FROM predictions WHERE outcome IS NOT NULL AND (notified IS NULL OR notified = 0)
+        FROM predictions WHERE outcome NOT IN ('SKIP', 'NO_TRADE') AND (notified IS NULL OR notified = 0)
     """).fetchall()
     if not rows:
         conn.close()
