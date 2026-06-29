@@ -357,6 +357,12 @@ def evaluate():
     evaluated = 0
     for pred_id, pred_date, pred_time, entry, sl, tp1, tp2, direction in rows:
         try:
+            # Skip NO_TRADE
+            if direction == "NO_TRADE":
+                c.execute("UPDATE predictions_4h SET outcome='SKIP', result_pct=0, outcome_detail='NO_TRADE' WHERE id=?",
+                          (pred_id,))
+                evaluated += 1
+                continue
             entry_ts = pd.Timestamp(f"{pred_date} {pred_time}")
             locs = np.where(df.index >= entry_ts)[0]
             if len(locs) == 0:

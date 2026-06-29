@@ -190,9 +190,9 @@ def api_overview():
     # Simulation
     sim = _db_query_one("SELECT balance, initial_balance FROM simulation WHERE active=1 ORDER BY id DESC LIMIT 1")
 
-    # Trade stats (daily + 4H combined)
-    daily_stats = _db_query_one("SELECT COUNT(*) as total, SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as wins, SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses FROM predictions WHERE outcome IS NOT NULL") or {"total": 0, "wins": 0, "losses": 0}
-    fourh_stats = _db_query_one("SELECT COUNT(*) as total, SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as wins, SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses FROM predictions_4h WHERE outcome IS NOT NULL") or {"total": 0, "wins": 0, "losses": 0}
+    # Trade stats (daily + 4H combined, exclude SKIP/NO_TRADE)
+    daily_stats = _db_query_one("SELECT COUNT(*) as total, SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as wins, SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses FROM predictions WHERE outcome NOT IN ('SKIP', 'NO_TRADE')") or {"total": 0, "wins": 0, "losses": 0}
+    fourh_stats = _db_query_one("SELECT COUNT(*) as total, SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as wins, SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses FROM predictions_4h WHERE outcome NOT IN ('SKIP', 'NO_TRADE')") or {"total": 0, "wins": 0, "losses": 0}
 
     total = (daily_stats["total"] or 0) + (fourh_stats["total"] or 0)
     wins = (daily_stats["wins"] or 0) + (fourh_stats["wins"] or 0)

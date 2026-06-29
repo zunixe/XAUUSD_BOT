@@ -514,6 +514,12 @@ def evaluate_past_predictions():
     evaluated = 0
     for pred_id, pred_date, entry_price, sl, tp1, tp2, direction in rows:
         try:
+            # Skip NO_TRADE — no position to evaluate
+            if direction == "NO_TRADE":
+                c.execute("UPDATE predictions SET outcome='SKIP', result_pct=0, outcome_detail='NO_TRADE' WHERE id=?",
+                          (pred_id,))
+                evaluated += 1
+                continue
             entry_idx = df.index.get_loc(pd.Timestamp(pred_date))
             # Skip if no forward data yet
             if entry_idx + 1 >= len(df):

@@ -435,7 +435,7 @@ def _handle_command(text, chat_id, token):
                     lines.append(f"  Current: ${curr:.2f}")
                 closed = c.execute("""
                     SELECT id, predicted_direction, outcome, outcome_detail, result_pct, sl, tp1, tp2
-                    FROM predictions WHERE outcome IS NOT NULL AND date LIKE ?
+                    FROM predictions WHERE outcome NOT IN ('SKIP', 'NO_TRADE') AND date LIKE ?
                     ORDER BY id DESC LIMIT 5
                 """, (f"{this_month}%",)).fetchall()
                 if closed:
@@ -449,7 +449,7 @@ def _handle_command(text, chat_id, token):
                         lines.append(f"    #{pid} {short_dir} {icon}{abs(pct):.1f}%{exit_str}")
                 closed4 = c.execute("""
                     SELECT id, predicted_direction, outcome, outcome_detail, result_pct, sl, tp1
-                    FROM predictions_4h WHERE outcome IS NOT NULL AND date LIKE ?
+                    FROM predictions_4h WHERE outcome NOT IN ('SKIP', 'NO_TRADE') AND date LIKE ?
                     ORDER BY id DESC LIMIT 5
                 """, (f"{this_month}%",)).fetchall()
                 if closed4:
