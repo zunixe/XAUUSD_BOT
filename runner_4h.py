@@ -319,12 +319,15 @@ def predict():
 
     conn = sqlite3.connect(trading.DB_FILE)
     c = conn.cursor()
-    # Skip if already predicted for this candle time
-    existing = c.execute("SELECT id FROM predictions_4h WHERE date=? AND time=?",
+    # Skip if already predicted same direction for this candle time
+    existing = c.execute("SELECT id, predicted_direction FROM predictions_4h WHERE date=? AND time=?",
                          (latest_time.strftime("%Y-%m-%d"), latest_time.strftime("%H:%M"))).fetchone()
-    if existing:
+    if existing and existing[1] == direction:
         conn.close()
         return None
+    # Delete previous NO_TRADE for this candle if now we have a real signal
+    if existing and existing[1] == "NO_TRADE" and direction != "NO_TRADE":
+        c.execute("DELETE FROM predictions_4h WHERE id=?", (existing[0],))
     c.execute("""
         INSERT INTO predictions_4h (date, time, price, predicted_direction, confidence,
             threshold, target_date, target_time, sl, tp1, tp2, entry_realtime, model_version)
