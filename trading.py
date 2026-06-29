@@ -54,12 +54,12 @@ def compute_tp_sl(levels, is_buy, entry):
     atr = levels["atr"]
     if is_buy:
         sl = round(max(levels["low_20"], entry - atr * 1.2), 2)
-        tp1 = round(max(entry + atr * 0.8, levels["bb_upper"]), 2)
-        tp2 = round(max(entry + atr * 1.8, levels["ema50"]), 2)
+        tp1 = round(min(entry + atr * 0.8, levels["bb_upper"]), 2)
+        tp2 = round(min(entry + atr * 1.8, levels["ema50"]), 2)
     else:
         sl = round(min(levels["high_20"], entry + atr * 1.2), 2)
-        tp1 = round(min(entry - atr * 0.8, levels["bb_lower"]), 2)
-        tp2 = round(min(entry - atr * 1.8, levels["low_20"]), 2)
+        tp1 = round(max(entry - atr * 0.8, levels["bb_lower"]), 2)
+        tp2 = round(max(entry - atr * 1.8, levels["low_20"]), 2)
     return sl, tp1, tp2
 
 
@@ -100,9 +100,9 @@ def evaluate_sl_tp(df, entry_idx, entry_price, sl, tp1, tp2, is_buy, max_lookahe
     final_close = float(segment["Close"].iloc[-1]) if len(segment) > 0 else entry_price
     pct = (final_close - entry_price) / entry_price * 100
     if is_buy:
-        outcome = "WIN" if pct > 0 else "LOSS"
+        outcome = "EXPIRED"
     else:
-        outcome = "WIN" if pct < 0 else "LOSS"
+        outcome = "EXPIRED"
         pct = -pct
     return outcome, "EXPIRED", final_close, pct
 
