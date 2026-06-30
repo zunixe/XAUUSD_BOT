@@ -854,8 +854,30 @@ async function refreshIndicators() {
   renderIndicators(d.monthly, 'indicators-monthly');
 }
 
+async function refreshNews() {
+  const d = await fetchJSON('/api/news');
+  if (!d) return;
+  document.getElementById('news-fetched').textContent = 'Updated ' + (d.fetched_at || '');
+  const impactColors = { high: 'text-red-400', medium: 'text-yellow-400', low: 'text-blue-400', holiday: 'text-purple-400' };
+  const impactBg = { high: 'bg-red-500/10', medium: 'bg-yellow-500/10', low: 'bg-blue-500/10', holiday: 'bg-purple-500/10' };
+  function render(list) {
+    if (!list.length) return '<div class="opacity-40 text-xs">No events</div>';
+    return list.map(e => {
+      const ic = impactColors[e.impact] || 'text-gray-400';
+      const ib = impactBg[e.impact] || '';
+      return `<div class="flex gap-2 py-1 ${ib}" style="border-radius:4px;padding:4px 6px">
+        <span class="opacity-40 font-mono text-[10px] w-14 shrink-0">${e.time}</span>
+        <span class="font-bold text-[10px] ${ic} w-8 shrink-0">${e.currency}</span>
+        <span class="text-xs flex-1">${e.event}</span>
+      </div>`;
+    }).join('');
+  }
+  document.getElementById('news-upcoming').innerHTML = render(d.upcoming || []);
+  document.getElementById('news-past').innerHTML = render(d.past || []);
+}
+
 async function refreshAll() {
-  await Promise.all([refreshStatus(), refreshOverview(), refreshSignals(), refreshActive(), refreshIndicators(), refreshRisk(),
+  await Promise.all([refreshStatus(), refreshOverview(), refreshSignals(), refreshActive(), refreshNews(), refreshIndicators(), refreshRisk(),
     refreshModel(), refreshTrades(), refreshEquity(), refreshFeatures(), refreshMonteCarlo(), refreshMacro(), refreshLogs(), loadPriceChart(90)]);
 }
 

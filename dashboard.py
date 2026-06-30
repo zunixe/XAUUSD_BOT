@@ -349,60 +349,73 @@ def api_news():
 
         # Parse markdown table rows
         impact_map = {"red": "high", "ora": "medium", "yel": "low", "gra": "holiday"}
-        date_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-        cur_month = datetime.now().strftime("%b")
         cur_date_label = None
 
         for line in text.splitlines():
-            # Detect date headers
-            dm = re.match(r'(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\w+)\s+(\d+)', line)
+            # Detect date headers ONLY (exact match: | Sun Jun 28 | — not event rows)
+            stripped = line.strip()
+            dm = re.fullmatch(r'\|\s*(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+(\w+)\s+(\d+)\s*\|', stripped)
             if dm:
                 cur_date_label = f"{dm.group(1)} {dm.group(2)} {dm.group(3)}"
                 continue
 
-            # Detect event rows: time | currency | impact_icon | event | actual | forecast | prev
-            rm = re.findall(r'(?:\|\s*([^|]+?)\s*(?:\|\s*([A-Z]{3})\s*)?(?:\|\s*.*?(?:ff-impact-(\w+)).*?)?\|\s*([^|]+?)\s*(?:\|\s*([^|]*?)\s*)?(?:\|\s*([^|]*?)\s*)?(?:\|\s*([^|]*?)\s*)?\|)', line)
-            if rm:
-                for m in rm:
-                    event_time = m[0].strip()
-                    currency = m[1].strip() if m[1] else ""
-                    impact_key = m[2].strip() if m[2] else ""
-                    event_name = m[3].strip()
-                    actual = m[4].strip() if len(m) > 4 else ""
-                    forecast = m[5].strip() if len(m) > 5 else ""
-                    previous = m[6].strip() if len(m) > 6 else ""
+            # Detect event rows: first event of day may have date in col[1], shift offset if so
+            parts = [p.strip() for p in line.split('|')]
+            if len(parts) < 5:
+                continue
+            offset = 0
+            if re.match(r'(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+\w+\s+\d+$', parts[1]):
+                offset = 1
+            event_time = parts[1 + offset] if len(parts) > 1 + offset else ""
+            currency = parts[2 + offset] if len(parts) > 2 + offset else ""
+            impact_row = parts[3 + offset] if len(parts) > 3 + offset else ""
+            event_name = parts[4 + offset] if len(parts) > 4 + offset else ""
 
-                    # Skip empty rows or header rows
-                    if not event_name or "Currency" in event_name or "Actual" in event_name:
-                        continue
-                    if not currency:
-                        continue
+            if not event_time or not currency or not event_name:
+                continue
+            if "Time" in event_time or currency not in ("USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF", "CNY"):
+                continue
 
-                    impact = impact_map.get(impact_key, "info")
-                    events.append({
-                        "date": cur_date_label or "",
-                        "time": event_time,
-                        "currency": currency,
-                        "impact": impact,
-                        "event": event_name,
-                        "actual": actual,
-                        "forecast": forecast,
-                        "previous": previous,
-                    })
+            impact_key = "info"
+            im = re.search(r'ff-impact-(\w+)', impact_row)
+            if im:
+                impact_key = im.group(1)
+            impact = impact_map.get(impact_key, "info")
+
+            actual = parts[5 + offset] if len(parts) > 5 + offset else ""
+            forecast = parts[6 + offset] if len(parts) > 6 + offset else ""
+            previous = parts[7 + offset] if len(parts) > 7 + offset else ""
+
+            events.append({
+                "date": cur_date_label or "",
+                "time": event_time,
+                "currency": currency,
+                "impact": impact,
+                "event": event_name,
+                "actual": actual,
+                "forecast": forecast,
+                "previous": previous,
+            })
     except Exception:
         pass
 
-    # Split into upcoming and past (within 2 days window)
+    # Split into upcoming and past
     now_str = datetime.now().strftime("%a %b %-d")
+    today_str = datetime.now().strftime("%a %b %d")
     upcoming = []
     past = []
     for e in events:
-        if e["date"].startswith(now_str.split()[0]):  # today matches
-            upcoming.append(e)
-        elif e["date"] >= now_str:  # future
+        if not e["date"]:
+            past.append(e)
+            continue
+        if e["date"] == now_str or e["date"] == today_str:
             upcoming.append(e)
         else:
-            past.append(e)
+            # Simple string date compare: "Thu Jul 2" > "Wed Jul 1"
+            if e["date"] >= now_str:
+                upcoming.append(e)
+            else:
+                past.append(e)
 
     result = {
         "upcoming": upcoming[:30],
