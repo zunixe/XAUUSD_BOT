@@ -227,6 +227,24 @@ tailwind.config = {
     </div>
   </div>
 
+  <!-- TECHNICAL INDICATORS -->
+  <div class="grid md:grid-cols-2 gap-4 mb-5">
+    <div class="card-dark card-blue p-5">
+      <div class="card-header">
+        <div class="card-icon icon-blue">📈 Daily</div>
+        <div class="text-xs font-semibold uppercase opacity-60">Technical Indicators</div>
+      </div>
+      <div id="indicators-daily" class="text-sm">Loading...</div>
+    </div>
+    <div class="card-dark card-indigo p-5">
+      <div class="card-header">
+        <div class="card-icon icon-indigo">⏱️ 4H</div>
+        <div class="text-xs font-semibold uppercase opacity-60">Technical Indicators</div>
+      </div>
+      <div id="indicators-4h" class="text-sm">Loading...</div>
+    </div>
+  </div>
+
   <!-- ACTIVE POSITIONS -->
   <div class="card-dark card-cyan p-5 mb-5">
     <div class="card-header" style="justify-content:space-between">
@@ -505,7 +523,6 @@ async function refreshModel() {
   let html = '';
   for (const [tf, m] of Object.entries(d)) {
     if (!m) { html += `<div class="text-sm opacity-40">${tf}: No model</div>`; continue; }
-    const tip = (label, text) => `<span class="tip">${label}<span class="tip-text">${text}</span></span>`;
     html += `
       <div class="mb-3 pb-3" style="border-bottom:1px solid rgba(255,255,255,0.06)">
         <div class="flex justify-between items-center mb-2"><span class="font-bold uppercase text-sm">${tf}</span><span class="badge badge-purple">${m.version === 'N/A' ? m.train_date?.slice(0,10)?.replace(/-/g,'') || 'N/A' : m.version}</span></div>
@@ -579,7 +596,6 @@ async function refreshFeatures() {
 async function refreshMonteCarlo() {
   const d = await fetchJSON('/api/montecarlo');
   if (!d) { document.getElementById('mc-stats').innerHTML = '<span class="opacity-40 text-sm">Need 20+ trades</span>'; return; }
-  const tip = (label, text) => `<span class="tip">${label}<span class="tip-text">${text}</span></span>`;
   document.getElementById('mc-stats').innerHTML = `
     <div class="grid grid-cols-2 gap-2">
       <div class="stat-box"><div class="text-[10px] opacity-50">${tip('Median Return','Nilai tengah dari 10.000 simulasi. 50% skenario di atas angka ini, 50% di bawah.')}</div><div class="font-bold ${d.median_return>0?'text-green-400':'text-red-400'}">${fmtPct(d.median_return*100)}</div></div>
@@ -778,11 +794,42 @@ async function refreshActive() {
       <span class="text-xs ${nearColor}">${nearText}</span>
     </div>`;
   }
-  document.getElementById('active-positions-content').innerHTML = html;
+   document.getElementById('active-positions-content').innerHTML = html;
+}
+
+const tip = (label, text) => `<span class="tip">${label}<span class="tip-text">${text}</span></span>`;
+
+function renderIndicators(data, elId) {
+  const el = document.getElementById(elId);
+  if (!data || !data.close) { el.innerHTML = '<span class="opacity-40 text-xs">N/A</span>'; return; }
+  const macdColor = data.macd_hist >= 0 ? 'text-green-400' : 'text-red-400';
+  const trendColor = data.trend > 0 ? 'text-green-400' : data.trend < 0 ? 'text-red-400' : 'text-gray-400';
+  const rsiColor = data.rsi > 70 ? 'text-red-400' : data.rsi < 30 ? 'text-green-400' : 'text-yellow-400';
+  el.innerHTML = `
+    <div class="grid grid-cols-2 gap-x-3 gap-y-1">
+      <div class="text-[10px] opacity-50">Close</div><div class="font-mono text-xs font-bold">${fmt$(data.close)}</div>
+      <div class="text-[10px] opacity-50">${tip('RSI (14)','Relative Strength Index. >70 = overbought, <30 = oversold.')}</div><div class="font-mono text-xs ${rsiColor}">${data.rsi.toFixed(1)}</div>
+      <div class="text-[10px] opacity-50">ATR (14)</div><div class="font-mono text-xs">${fmt$(data.atr)}</div>
+      <div class="text-[10px] opacity-50">${tip('ADX (14)','Average Directional Index. >25 = trending, <20 = ranging.')}</div><div class="font-mono text-xs">${data.adx.toFixed(1)}</div>
+      <div class="text-[10px] opacity-50">+DI / -DI</div><div class="font-mono text-xs">+${data.plus_di} / -${data.minus_di}</div>
+      <div class="text-[10px] opacity-50">${tip('Trend','Model trend direction. BULL=bullish, BEAR=bearish, FLAT=sideways.')}</div><div class="font-mono text-xs font-bold ${trendColor}">${data.trend_label}</div>
+      <div class="text-[10px] opacity-50">${tip('MACD','Trend-following momentum. Line > Signal = bullish. Histogram = difference.')}</div><div class="font-mono text-xs ${macdColor}">${data.macd.toFixed(1)}</div>
+      <div class="text-[10px] opacity-50">Signal</div><div class="font-mono text-xs">${data.macd_signal.toFixed(1)}</div>
+      <div class="text-[10px] opacity-50">Histogram</div><div class="font-mono text-xs font-bold ${macdColor}">${data.macd_hist >= 0 ? '+' : ''}${data.macd_hist.toFixed(1)}</div>
+      <div class="text-[10px] opacity-50">EMA20 / EMA50</div><div class="font-mono text-xs">${fmt$(data.ema20)} / ${fmt$(data.ema50)}</div>
+      <div class="text-[10px] opacity-50">BB Upper / Lower</div><div class="font-mono text-xs">${fmt$(data.bb_upper)} / ${fmt$(data.bb_lower)}</div>
+      <div class="text-[10px] opacity-50">Swing H / Swing L</div><div class="font-mono text-xs">${fmt$(data.swing_high)} / ${fmt$(data.swing_low)}</div>
+    </div>`;
+}
+
+async function refreshIndicators() {
+  const d = await fetchJSON('/api/indicators');
+  renderIndicators(d.daily, 'indicators-daily');
+  renderIndicators(d['4h'], 'indicators-4h');
 }
 
 async function refreshAll() {
-  await Promise.all([refreshStatus(), refreshOverview(), refreshSignals(), refreshActive(), refreshRisk(),
+  await Promise.all([refreshStatus(), refreshOverview(), refreshSignals(), refreshActive(), refreshIndicators(), refreshRisk(),
     refreshModel(), refreshTrades(), refreshEquity(), refreshFeatures(), refreshMonteCarlo(), refreshMacro(), refreshLogs(), loadPriceChart(90)]);
 }
 

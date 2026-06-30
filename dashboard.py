@@ -330,6 +330,42 @@ def api_signals():
     })
 
 
+@app.route("/api/indicators")
+def api_indicators():
+    result = {"daily": {}, "4h": {}}
+    for tf, csv in [("daily", trading.CSV_DAILY), ("4h", trading.CSV_4H)]:
+        try:
+            df = pd.read_csv(csv, parse_dates=["Date"])
+            df.sort_values("Date", inplace=True)
+            df.set_index("Date", inplace=True)
+            levels = trading.calculate_levels(df)
+            adx, plus_di, minus_di = trading.compute_adx(df["High"], df["Low"], df["Close"])
+            trend = trading.get_daily_trend(df)
+            trend_val = int(trend.iloc[-1]) if len(trend) > 0 else 0
+            result[tf] = {
+                "close": round(levels["close"], 2),
+                "rsi": round(levels["rsi"], 1),
+                "atr": round(levels["atr"], 2),
+                "macd": round(levels.get("macd", 0), 2),
+                "macd_signal": round(levels.get("macd_signal", 0), 2),
+                "macd_hist": round(levels.get("macd_hist", 0), 2),
+                "adx": round(float(adx.iloc[-1]), 1),
+                "plus_di": round(float(plus_di.iloc[-1]), 1),
+                "minus_di": round(float(minus_di.iloc[-1]), 1),
+                "trend": trend_val,
+                "trend_label": "BULL" if trend_val > 0 else "BEAR" if trend_val < 0 else "FLAT",
+                "ema20": round(levels["ema20"], 2),
+                "ema50": round(levels["ema50"], 2),
+                "bb_upper": round(levels["bb_upper"], 2),
+                "bb_lower": round(levels["bb_lower"], 2),
+                "swing_high": round(levels["swing_high"], 2),
+                "swing_low": round(levels["swing_low"], 2),
+            }
+        except Exception:
+            continue
+    return jsonify(result)
+
+
 @app.route("/api/equity")
 def api_equity():
     sim = _db_query_one("SELECT initial_balance FROM simulation WHERE active=1 ORDER BY id DESC LIMIT 1")

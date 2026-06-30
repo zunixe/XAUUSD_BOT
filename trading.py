@@ -36,9 +36,15 @@ def calculate_levels(df):
     ls = (-d.where(d < 0, 0)).rolling(14).mean()
     rsi = 100 - 100 / (1 + g / (ls + 1e-10))
     tr = pd.concat([h - l, abs(h - c.shift(1)), abs(l - c.shift(1))], axis=1).max(axis=1)
+    atr = tr.rolling(14).mean()
+    ema12 = c.ewm(span=12).mean()
+    ema26 = c.ewm(span=26).mean()
+    macd_line = ema12 - ema26
+    macd_signal = macd_line.ewm(span=9).mean()
+    macd_hist = macd_line - macd_signal
     return {
         "close": float(c.iloc[-1]), "rsi": float(rsi.iloc[-1]),
-        "atr": float(tr.rolling(14).mean().iloc[-1]),
+        "atr": float(atr.iloc[-1]),
         "ema20": float(c.ewm(span=20).mean().iloc[-1]),
         "ema50": float(c.ewm(span=50).mean().iloc[-1]),
         "bb_upper": float((c.rolling(20).mean() + 2 * c.rolling(20).std()).iloc[-1]),
@@ -47,6 +53,9 @@ def calculate_levels(df):
         "swing_low": float(l.rolling(50).min().iloc[-1]),
         "low_20": float(l.rolling(20).min().iloc[-1]),
         "high_20": float(h.rolling(20).max().iloc[-1]),
+        "macd": float(macd_line.iloc[-1]),
+        "macd_signal": float(macd_signal.iloc[-1]),
+        "macd_hist": float(macd_hist.iloc[-1]),
     }
 
 
