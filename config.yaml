@@ -9,7 +9,7 @@ model:
   n_splits_4h: 3
   optuna_trials_daily: 30
   optuna_trials_4h: 20
-  min_threshold: 0.50
+  min_threshold: 0.55
   retrain_min_evaluations: 30
   retrain_interval_days: 30
 

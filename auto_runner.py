@@ -437,18 +437,22 @@ def run_prediction_job():
         except Exception:
             pass
 
-    # Multi-timeframe confirmation (Phase 2.2): disabled — model already uses daily data
-    # if direction != "NO_TRADE" and adx_passed:
-    #     try:
-    #         dt_val = daily_trend.iloc[-1] if len(daily_trend) > 0 else 0
-    #         if direction.startswith("BUY") and dt_val == -1:
-    #             log(f"[FILTER] BUY rejected: daily trend bearish")
-    #             direction = "NO_TRADE"
-    #         elif direction.startswith("SELL") and dt_val == 1:
-    #             log(f"[FILTER] SELL rejected: daily trend bullish")
-    #             direction = "NO_TRADE"
-    #     except Exception:
-    #         pass
+    # Multi-timeframe confirmation: cek 4H direction
+    if direction != "NO_TRADE" and adx_passed:
+        try:
+            conn4h = sqlite3.connect(trading.DB_FILE)
+            last4h = conn4h.execute(
+                "SELECT predicted_direction FROM predictions_4h WHERE outcome IS NULL AND predicted_direction != 'NO_TRADE' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            conn4h.close()
+            if last4h and last4h[0]:
+                is_buy = direction.startswith("BUY")
+                fourh_buy = "BUY" in last4h[0]
+                if is_buy != fourh_buy:
+                    log(f"[FILTER] {direction} rejected: 4H conflict ({last4h[0]})")
+                    direction = "NO_TRADE"
+        except Exception:
+            pass
 
     # SHAP top drivers (Phase 2.4)
     top_features = []
