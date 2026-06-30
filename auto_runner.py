@@ -491,7 +491,7 @@ def run_prediction_job():
 
     # Kirim notifikasi Telegram hanya untuk BUY/SELL
     if direction != "NO_TRADE":
-        result = telegram_notifier.send_signal(pred_id, direction, confidence, latest_price, target_date, min_thresh)
+        result = telegram_notifier.send_signal(pred_id, direction, confidence, latest_price, min_thresh)
         if result:
             c.execute("UPDATE predictions SET entry_realtime=? WHERE id=?", (result["entry_realtime"], pred_id))
             conn.commit()

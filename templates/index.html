@@ -472,7 +472,7 @@ async function refreshSignals() {
         <div class="stat-box"><div class="text-[10px] opacity-50">TP1</div><div class="font-bold font-mono text-sm text-green-400">${fmt$(sig.tp1)}</div></div>
         <div class="stat-box"><div class="text-[10px] opacity-50">TP2</div><div class="font-bold font-mono text-sm text-green-400">${fmt$(sig.tp2)}</div></div>
       </div>
-      <div class="text-[10px] opacity-40 mt-2">${sig.model_version || ''} | Target: ${sig.target_date || 'N/A'}</div>`;
+      <div class="text-[10px] opacity-40 mt-2">${sig.model_version || ''}</div>`;
   }
   document.getElementById('signal-daily').innerHTML = renderSignal(d.daily);
   document.getElementById('signal-4h').innerHTML = renderSignal(d.fourh);

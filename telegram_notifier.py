@@ -107,7 +107,7 @@ def get_realtime_price():
     return None
 
 
-def send_signal(prediction_id, direction, confidence, daily_price, target_date, threshold,
+def send_signal(prediction_id, direction, confidence, daily_price, threshold,
                 bot_token=None, chat_id=None):
     """
     Send signal notification to Telegram.
@@ -149,8 +149,7 @@ def send_signal(prediction_id, direction, confidence, daily_price, target_date, 
         f"{p('SL', f'${sl:.2f} (-${risk:.2f})')}\n"
         f"{p('TP1', f'${tp1:.2f} (+${tp1 - entry:.2f}, RR 1:{rr1:.2f})')}\n"
         f"{p('TP2', f'${tp2:.2f} (+${tp2 - entry:.2f}, RR 1:{rr2:.2f})')}\n"
-        f"{p('ATR / RSI', f'${atr_val:.1f} / {rsi_val:.0f}')}\n"
-        f"{p('Target', target_date)}"
+        f"{p('ATR / RSI', f'${atr_val:.1f} / {rsi_val:.0f}')}"
     )
     msg = (
         f"<b>\U0001F525 [XAUUSD SIGNAL] #{prediction_id} — Daily Candle</b>\n"
