@@ -24,7 +24,8 @@ def manage_trailing_stops(atr=None):
     except Exception:
         return 0
 
-    # Get ATR if not provided
+    # Get ATR and OHLC data for TP1 hit check
+    df = None
     if atr is None:
         try:
             import pandas as pd
@@ -35,6 +36,12 @@ def manage_trailing_stops(atr=None):
             atr = tr.rolling(14).mean().iloc[-1]
         except Exception:
             return 0
+    else:
+        try:
+            import pandas as pd
+            df = trading.load_daily()
+        except Exception:
+            pass
 
     ts_cfg = CFG.get("trailing_stop", {})
     breakeven_atr = ts_cfg.get("breakeven_atr", 0.5)
@@ -60,6 +67,22 @@ def manage_trailing_stops(atr=None):
             profit_atr = profit / (atr + 1e-10)
 
             new_sl = sl
+
+            # --- TP1 breach check: if TP1 ever hit, move SL to breakeven ---
+            if tp1 is not None:
+                try:
+                    entry_idx = df.index.get_loc(pd.Timestamp(date))
+                    segment = df.iloc[entry_idx + 1:]
+                    if len(segment) > 0:
+                        tp1_hit = segment["High"].max() >= tp1 if is_buy else segment["Low"].min() <= tp1
+                        if tp1_hit:
+                            be_sl = round(entry + 0.30, 2) if is_buy else round(entry - 0.30, 2)
+                            if (is_buy and be_sl > sl) or (not is_buy and be_sl < sl):
+                                new_sl = max(new_sl, be_sl) if is_buy else min(new_sl, be_sl)
+                except (KeyError, Exception):
+                    pass
+
+            # --- ATR-based trailing ---
             if profit_atr >= trail_atr:
                 if is_buy:
                     new_sl = round(current_price - atr * trail_distance, 2)
