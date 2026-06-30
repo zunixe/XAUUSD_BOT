@@ -87,6 +87,12 @@ tailwind.config = {
   .signal-card { padding:16px; border-radius:12px; }
   .dark .signal-card { background:rgba(255,255,255,0.03); }
   .light .signal-card { background:#f8fafc; }
+  .tip { position:relative; cursor:help; border-bottom:1px dotted rgba(255,255,255,0.3); }
+  .tip .tip-text { visibility:hidden; opacity:0; position:absolute; bottom:calc(100% + 6px); left:50%; transform:translateX(-50%); z-index:100;
+    background:#1e293b; color:#e2e8f0; padding:6px 10px; border-radius:6px; font-size:11px; white-space:nowrap; transition:opacity 0.15s;
+    box-shadow:0 4px 12px rgba(0,0,0,0.4); pointer-events:none; max-width:260px; white-space:normal; text-align:center; line-height:1.4; }
+  .light .tip .tip-text { background:#f1f5f9; color:#1e293b; box-shadow:0 4px 12px rgba(0,0,0,0.15); }
+  .tip:hover .tip-text { visibility:visible; opacity:1; }
 
   .table-row { transition:background 0.15s; }
   .dark .table-row:hover { background:rgba(255,255,255,0.03); }
@@ -487,15 +493,16 @@ async function refreshModel() {
   let html = '';
   for (const [tf, m] of Object.entries(d)) {
     if (!m) { html += `<div class="text-sm opacity-40">${tf}: No model</div>`; continue; }
+    const tip = (label, text) => `<span class="tip">${label}<span class="tip-text">${text}</span></span>`;
     html += `
       <div class="mb-3 pb-3" style="border-bottom:1px solid rgba(255,255,255,0.06)">
         <div class="flex justify-between items-center mb-2"><span class="font-bold uppercase text-sm">${tf}</span><span class="badge badge-purple">${m.version}</span></div>
         <div class="grid grid-cols-3 gap-2">
-          <div class="stat-box"><div class="text-[10px] opacity-50">Accuracy</div><div class="font-bold text-sm">${fmtPct(m.test_acc)}</div></div>
-          <div class="stat-box"><div class="text-[10px] opacity-50">OOT</div><div class="font-bold text-sm">${m.oot_acc ? fmtPct(m.oot_acc) : 'N/A'}</div></div>
-          <div class="stat-box"><div class="text-[10px] opacity-50">F1</div><div class="font-bold text-sm">${fmtPct(m.f1)}</div></div>
+          <div class="stat-box"><div class="text-[10px] opacity-50">${tip('Accuracy','Correct predictions / total (test set). Higher = better generalisasi.')}</div><div class="font-bold text-sm">${fmtPct(m.test_acc)}</div></div>
+          <div class="stat-box"><div class="text-[10px] opacity-50">${tip('OOT','Out-Of-Time accuracy. Diuji pada data terbaru yg tidak dipakai training. Ukuran robustness.')}</div><div class="font-bold text-sm">${m.oot_acc ? fmtPct(m.oot_acc) : 'N/A'}</div></div>
+          <div class="stat-box"><div class="text-[10px] opacity-50">${tip('F1','Harmonic mean precision & recall. Balance antara false positive & false negative.')}</div><div class="font-bold text-sm">${fmtPct(m.f1)}</div></div>
         </div>
-        <div class="text-[10px] opacity-40 mt-2">${m.features} features | ${m.train_samples} samples | Thresh: ${m.threshold} | ${m.train_date}</div>
+        <div class="text-[10px] opacity-40 mt-2">${tip(m.features+' features','Jumlah input variable yg dipakai model untuk prediksi.')} | ${tip(m.train_samples+' samples','Jumlah baris data yg dipakai saat training.')} | ${tip('Thresh: '+m.threshold,'Confidence threshold. Prediksi di atas ini = BUY/SELL, di bawah = NO_TRADE.')} | ${m.train_date}</div>
       </div>`;
   }
   document.getElementById('model-panel').innerHTML = html;
@@ -560,12 +567,13 @@ async function refreshFeatures() {
 async function refreshMonteCarlo() {
   const d = await fetchJSON('/api/montecarlo');
   if (!d) { document.getElementById('mc-stats').innerHTML = '<span class="opacity-40 text-sm">Need 20+ trades</span>'; return; }
+  const tip = (label, text) => `<span class="tip">${label}<span class="tip-text">${text}</span></span>`;
   document.getElementById('mc-stats').innerHTML = `
     <div class="grid grid-cols-2 gap-2">
-      <div class="stat-box"><div class="text-[10px] opacity-50">Median Return</div><div class="font-bold ${d.median_return>0?'text-green-400':'text-red-400'}">${fmtPct(d.median_return*100)}</div></div>
-      <div class="stat-box"><div class="text-[10px] opacity-50">Prob of Profit</div><div class="font-bold text-green-400">${fmtPct(d.prob_profit*100)}</div></div>
-      <div class="stat-box"><div class="text-[10px] opacity-50">5th-95th pctl</div><div class="font-bold text-xs">${fmtPct(d.p5_return*100)} ~ ${fmtPct(d.p95_return*100)}</div></div>
-      <div class="stat-box"><div class="text-[10px] opacity-50">Prob of Ruin</div><div class="font-bold ${d.prob_ruin>0.05?'text-red-400':'text-green-400'}">${fmtPct(d.prob_ruin*100)}</div></div>
+      <div class="stat-box"><div class="text-[10px] opacity-50">${tip('Median Return','Nilai tengah dari 10.000 simulasi. 50% skenario di atas angka ini, 50% di bawah.')}</div><div class="font-bold ${d.median_return>0?'text-green-400':'text-red-400'}">${fmtPct(d.median_return*100)}</div></div>
+      <div class="stat-box"><div class="text-[10px] opacity-50">${tip('Prob of Profit','Persentase simulasi yg berakhir profit. Makin tinggi makin konsisten sistemnya.')}</div><div class="font-bold text-green-400">${fmtPct(d.prob_profit*100)}</div></div>
+      <div class="stat-box"><div class="text-[10px] opacity-50">${tip('5th-95th pctl','Rentang hasil 90% skenario terbaik-terburuk. 5% sisanya di luar rentang ini (extreme).')}</div><div class="font-bold text-xs">${fmtPct(d.p5_return*100)} ~ ${fmtPct(d.p95_return*100)}</div></div>
+      <div class="stat-box"><div class="text-[10px] opacity-50">${tip('Prob of Ruin','Peluang balance turun ke $0. Jika >5%, strategi terlalu berisiko.')}</div><div class="font-bold ${d.prob_ruin>0.05?'text-red-400':'text-green-400'}">${fmtPct(d.prob_ruin*100)}</div></div>
     </div>`;
   const gc = darkMode ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.05)';
   const tc = darkMode ? '#64748b' : '#94a3b8';
