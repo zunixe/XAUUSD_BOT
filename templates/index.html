@@ -6,6 +6,7 @@
 <title>XAUUSD Trading Dashboard</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
 <script>
 tailwind.config = {
   darkMode: 'class',
@@ -165,10 +166,16 @@ tailwind.config = {
     <div class="card-dark card-green p-5">
       <div class="card-header">
         <div class="card-icon icon-green">🎯</div>
-        <div class="text-xs font-semibold uppercase opacity-60">Win Rate</div>
+        <div class="text-xs font-semibold uppercase opacity-60">Win / Loss</div>
       </div>
-      <div class="text-2xl font-bold text-green-400" id="win-rate">...</div>
-      <div class="text-xs mt-1 opacity-60" id="trade-count">...</div>
+      <div class="flex items-center gap-4 mt-1">
+        <div><span class="text-2xl font-bold text-green-400" id="wins-count">...</span><span class="text-xs opacity-50 ml-1">W</span></div>
+        <div><span class="text-2xl font-bold text-red-400" id="losses-count">...</span><span class="text-xs opacity-50 ml-1">L</span></div>
+      </div>
+      <div class="text-xs mt-1 flex gap-2">
+        <span class="opacity-60" id="win-rate">...</span>
+        <span class="opacity-40" id="trade-count">...</span>
+      </div>
     </div>
     <div class="card-dark card-amber p-5">
       <div class="card-header">
@@ -206,6 +213,20 @@ tailwind.config = {
     </div>
   </div>
 
+  <!-- ACTIVE POSITIONS -->
+  <div class="card-dark card-cyan p-5 mb-5">
+    <div class="card-header" style="justify-content:space-between">
+      <div class="flex items-center gap-2">
+        <div class="card-icon icon-cyan">🔴</div>
+        <div class="text-xs font-semibold uppercase opacity-60">Active Positions</div>
+      </div>
+      <span id="active-summary" class="text-xs opacity-60"></span>
+    </div>
+    <div id="active-positions-content" class="text-sm">
+      <div class="opacity-40">Loading...</div>
+    </div>
+  </div>
+
   <!-- XAUUSD PRICE CHART -->
   <div class="card-dark card-amber p-5 mb-5">
     <div class="card-header" style="justify-content:space-between">
@@ -221,7 +242,7 @@ tailwind.config = {
         <button onclick="loadPriceChart(365)" class="btn text-xs" style="padding:4px 10px" id="btn-365d">1Y</button>
       </div>
     </div>
-    <div class="h-80"><canvas id="price-chart"></canvas></div>
+    <div class="h-80" id="price-chart"></div>
     <div id="chart-levels" class="flex gap-4 mt-3 text-[11px] opacity-60 flex-wrap"></div>
   </div>
 
@@ -351,7 +372,7 @@ tailwind.config = {
 </div>
 
 <script>
-let equityChart, featuresChart, mcChart, priceChart;
+let equityChart, featuresChart, mcChart, priceChart, lwChart;
 let allTrades = [];
 const darkMode = localStorage.getItem('theme') !== 'light';
 
@@ -403,8 +424,10 @@ async function refreshOverview() {
   const pnlEl = document.getElementById('pnl');
   pnlEl.textContent = `${fmt$(d.pnl)} (${fmtPct(d.return_pct)})`;
   pnlEl.className = 'text-xs ' + (d.pnl >= 0 ? 'text-green-400' : 'text-red-400');
-  document.getElementById('win-rate').textContent = fmtPct(d.win_rate);
-  document.getElementById('trade-count').textContent = `${d.total_trades} trades (${d.wins}W / ${d.losses}L)`;
+  document.getElementById('wins-count').textContent = d.wins;
+  document.getElementById('losses-count').textContent = d.losses;
+  document.getElementById('win-rate').textContent = `WR: ${fmtPct(d.win_rate)}`;
+  document.getElementById('trade-count').textContent = `${d.total_trades} trades total`;
   const mrEl = document.getElementById('monthly-return');
   mrEl.textContent = fmtPct(d.monthly_return);
   mrEl.className = 'text-2xl font-bold ' + (d.monthly_return >= 0 ? 'text-green-400' : 'text-red-400');
@@ -595,7 +618,6 @@ async function doAction(action) {
 }
 
 async function loadPriceChart(days) {
-  // Highlight active button
   [30,90,180,365].forEach(d => {
     const btn = document.getElementById('btn-'+d+'d');
     if (btn) { btn.style.background = d === days ? 'rgba(245,158,11,0.3)' : ''; btn.style.color = d === days ? '#fbbf24' : ''; }
@@ -605,12 +627,9 @@ async function loadPriceChart(days) {
   if (!d?.points?.length) return;
 
   const points = d.points;
-  const labels = points.map(p => p.date);
   const closes = points.map(p => p.close);
-  const highs = points.map(p => p.high);
-  const lows = points.map(p => p.low);
 
-  // Calculate EMA20 and EMA50
+  // Calculate EMAs and BB
   function ema(data, period) {
     const k = 2 / (period + 1);
     const result = [data[0]];
@@ -619,8 +638,6 @@ async function loadPriceChart(days) {
   }
   const ema20 = ema(closes, 20);
   const ema50 = ema(closes, 50);
-
-  // Bollinger Bands (20,2)
   const bbMid = closes.map((_, i) => {
     if (i < 19) return null;
     const slice = closes.slice(i-19, i+1);
@@ -635,101 +652,64 @@ async function loadPriceChart(days) {
   const bbUpper = bbMid.map((m, i) => m != null ? m + 2 * bbStd[i] : null);
   const bbLower = bbMid.map((m, i) => m != null ? m - 2 * bbStd[i] : null);
 
-  // Chart colors
-  const gc = darkMode ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.05)';
-  const tc = darkMode ? '#64748b' : '#94a3b8';
+  const bgDark = darkMode || document.documentElement.classList.contains('dark');
+  const textColor = bgDark ? '#94a3b8' : '#475569';
+  const gridColor = bgDark ? '#1e293b' : '#e2e8f0';
 
-  // Highlight buttons
   document.getElementById('chart-price').textContent = fmt$(closes[closes.length-1]);
 
-  if (priceChart) priceChart.destroy();
-  priceChart = new Chart(document.getElementById('price-chart'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        {
-          label: 'Close',
-          data: closes,
-          borderColor: '#f59e0b',
-          backgroundColor: 'rgba(245,158,11,0.05)',
-          fill: false,
-          tension: 0.1,
-          pointRadius: 0,
-          borderWidth: 2,
-          order: 1,
-        },
-        {
-          label: 'EMA 20',
-          data: ema20,
-          borderColor: '#3b82f6',
-          fill: false,
-          tension: 0.3,
-          pointRadius: 0,
-          borderWidth: 1.5,
-          borderDash: [4, 2],
-          order: 2,
-        },
-        {
-          label: 'EMA 50',
-          data: ema50,
-          borderColor: '#a855f7',
-          fill: false,
-          tension: 0.3,
-          pointRadius: 0,
-          borderWidth: 1.5,
-          borderDash: [4, 2],
-          order: 3,
-        },
-        {
-          label: 'BB Upper',
-          data: bbUpper,
-          borderColor: 'rgba(34,197,94,0.3)',
-          fill: false,
-          tension: 0.3,
-          pointRadius: 0,
-          borderWidth: 1,
-          borderDash: [2, 4],
-          order: 4,
-        },
-        {
-          label: 'BB Lower',
-          data: bbLower,
-          borderColor: 'rgba(34,197,94,0.3)',
-          fill: '-1',
-          backgroundColor: 'rgba(34,197,94,0.03)',
-          tension: 0.3,
-          pointRadius: 0,
-          borderWidth: 1,
-          borderDash: [2, 4],
-          order: 5,
-        },
-      ]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: {
-          display: true,
-          position: 'top',
-          labels: { color: tc, boxWidth: 12, padding: 12, font: { size: 10 } }
-        },
-        tooltip: {
-          callbacks: {
-            label: ctx => `${ctx.dataset.label}: $${ctx.parsed.y.toFixed(2)}`
-          }
-        }
-      },
-      scales: {
-        x: { grid: { color: gc }, ticks: { color: tc, maxTicksLimit: 10, font: { size: 10 } } },
-        y: { grid: { color: gc }, ticks: { color: tc, callback: v => '$' + v.toLocaleString() } },
-      }
-    }
+  // Destroy old lightweight chart if exists
+  if (lwChart) { lwChart.remove(); lwChart = null; }
+
+  const container = document.getElementById('price-chart');
+  lwChart = LightweightCharts.createChart(container, {
+    layout: { background: { type: 'solid', color: 'transparent' }, textColor },
+    grid: { vertLines: { color: gridColor }, horzLines: { color: gridColor } },
+    width: container.clientWidth || 600,
+    height: container.clientHeight || 320,
+    rightPriceScale: { borderColor: gridColor },
+    timeScale: { borderColor: gridColor, timeVisible: false },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
   });
 
-  // Show technical levels
+  // Candlestick series
+  const candleSeries = lwChart.addSeries(LightweightCharts.CandlestickSeries, {
+    upColor: '#22c55e', downColor: '#ef4444',
+    borderUpColor: '#22c55e', borderDownColor: '#ef4444',
+    wickUpColor: '#22c55e', wickDownColor: '#ef4444',
+  });
+  const candleData = points.map(p => ({
+    time: p.date,
+    open: p.open, high: p.high, low: p.low, close: p.close,
+  }));
+  candleSeries.setData(candleData);
+
+  // EMA 20 line
+  lwChart.addSeries(LightweightCharts.LineSeries, {
+    color: '#3b82f6', lineWidth: 1.5, lineStyle: LightweightCharts.LineStyle.Dashed,
+    priceLineVisible: false, lastValueVisible: false,
+  }).setData(points.map((p, i) => ({ time: p.date, value: ema20[i] })));
+
+  // EMA 50 line
+  lwChart.addSeries(LightweightCharts.LineSeries, {
+    color: '#a855f7', lineWidth: 1.5, lineStyle: LightweightCharts.LineStyle.Dashed,
+    priceLineVisible: false, lastValueVisible: false,
+  }).setData(points.map((p, i) => ({ time: p.date, value: ema50[i] })));
+
+  // BB Upper
+  lwChart.addSeries(LightweightCharts.LineSeries, {
+    color: 'rgba(34,197,94,0.3)', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted,
+    priceLineVisible: false, lastValueVisible: false,
+  }).setData(points.map((p, i) => ({ time: p.date, value: bbUpper[i] })).filter(p => p.value != null));
+
+  // BB Lower
+  lwChart.addSeries(LightweightCharts.LineSeries, {
+    color: 'rgba(34,197,94,0.3)', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted,
+    priceLineVisible: false, lastValueVisible: false,
+  }).setData(points.map((p, i) => ({ time: p.date, value: bbLower[i] })).filter(p => p.value != null));
+
+  lwChart.timeScale().fitContent();
+
   if (d.levels) {
     const l = d.levels;
     document.getElementById('chart-levels').innerHTML = `
@@ -745,8 +725,44 @@ async function loadPriceChart(days) {
   }
 }
 
+// Resize lightweight chart when container changes size
+const ro = new ResizeObserver(() => { if (lwChart) { const c = document.getElementById('price-chart'); if (c) lwChart.resize(c.clientWidth, c.clientHeight); } });
+ro.observe(document.getElementById('price-chart'));
+
+async function refreshActive() {
+  const d = await fetchJSON('/api/active');
+  if (!d) return;
+  const daily = d.daily || [];
+  const fourh = d.fourh || [];
+  document.getElementById('active-summary').textContent = `${daily.length} daily, ${fourh.length} 4H`;
+  let html = '';
+  const all = [...daily.map(p=>({...p,tf:'Daily'})), ...fourh.map(p=>({...p,tf:'4H'}))];
+  if (!all.length) {
+    document.getElementById('active-positions-content').innerHTML = '<div class="opacity-40 text-sm">No active positions this month</div>';
+    return;
+  }
+  for (const p of all) {
+    const dir = p.predicted_direction || 'N/A';
+    const dirColor = dir.includes('BUY') ? 'badge-green' : 'badge-red';
+    const entry = p.entry || '—';
+    const nearColor = p.near_sl ? 'text-red-400 font-bold' : p.near_tp1 ? 'text-green-400 font-bold' : '';
+    const nearText = p.near_sl ? '⚠️ SL NEAR' : p.near_tp1 ? '✅ TP NEAR' : '';
+    html += `<div class="flex items-center gap-3 py-2" style="border-bottom:1px solid rgba(255,255,255,0.05)">
+      <span class="text-[10px] opacity-40 w-6">#${p.id}</span>
+      <span class="badge ${dirColor} text-[10px]">${dir}</span>
+      <span class="text-[10px] opacity-50 w-6">${p.tf}</span>
+      <span class="font-mono text-xs">${fmt$(entry)}</span>
+      <span class="font-mono text-xs text-red-400">SL ${fmt$(p.sl)}</span>
+      <span class="font-mono text-xs text-green-400">TP1 ${fmt$(p.tp1)}</span>
+      ${p.tp2 ? `<span class="font-mono text-xs text-green-400">TP2 ${fmt$(p.tp2)}</span>` : ''}
+      <span class="text-xs ${nearColor}">${nearText}</span>
+    </div>`;
+  }
+  document.getElementById('active-positions-content').innerHTML = html;
+}
+
 async function refreshAll() {
-  await Promise.all([refreshStatus(), refreshOverview(), refreshSignals(), refreshRisk(),
+  await Promise.all([refreshStatus(), refreshOverview(), refreshSignals(), refreshActive(), refreshRisk(),
     refreshModel(), refreshTrades(), refreshEquity(), refreshFeatures(), refreshMonteCarlo(), refreshMacro(), refreshLogs(), loadPriceChart(90)]);
 }
 

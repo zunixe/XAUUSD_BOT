@@ -198,9 +198,10 @@ def api_overview():
     wins = (daily_stats["wins"] or 0) + (fourh_stats["wins"] or 0)
     losses = (daily_stats["losses"] or 0) + (fourh_stats["losses"] or 0)
 
-    # Active positions (only BUY/SELL, not NO_TRADE)
-    daily_active = _db_query("SELECT id, predicted_direction, confidence, sl, tp1, tp2 FROM predictions WHERE outcome IS NULL AND predicted_direction != 'NO_TRADE'")
-    fourh_active = _db_query("SELECT id, predicted_direction, confidence, sl, tp1, tp2 FROM predictions_4h WHERE outcome IS NULL AND predicted_direction != 'NO_TRADE'")
+    # Active positions (only BUY/SELL, not NO_TRADE) — same month filter as Telegram
+    this_month = datetime.now().strftime("%Y-%m")
+    daily_active = _db_query("SELECT id, predicted_direction, confidence, sl, tp1, tp2, entry_realtime, price FROM predictions WHERE date LIKE ? AND outcome IS NULL AND predicted_direction != 'NO_TRADE'", (f"{this_month}%",))
+    fourh_active = _db_query("SELECT id, predicted_direction, confidence, sl, tp1, tp2, entry_realtime, price FROM predictions_4h WHERE date LIKE ? AND outcome IS NULL AND predicted_direction != 'NO_TRADE'", (f"{this_month}%",))
 
     # Pending predictions
     daily_pending = len(daily_active)
@@ -485,6 +486,47 @@ def api_price_history():
         return jsonify({"points": points, "levels": clean_levels})
     except Exception as e:
         return jsonify({"points": [], "levels": {}, "error": str(e)})
+
+
+@app.route("/api/active")
+def api_active():
+    """Active positions with SL/TP proximity (matches Telegram /info logic)."""
+    this_month = datetime.now().strftime("%Y-%m")
+    curr = _get_live_price()
+    conn = sqlite3.connect(trading.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    try:
+        daily = [dict(r) for r in conn.execute(
+            "SELECT id, date, price, predicted_direction, confidence, sl, tp1, tp2, entry_realtime "
+            "FROM predictions WHERE date LIKE ? AND outcome IS NULL AND predicted_direction != 'NO_TRADE'",
+            (f"{this_month}%",)).fetchall()]
+        fourh = [dict(r) for r in conn.execute(
+            "SELECT id, date, time, price, predicted_direction, confidence, sl, tp1, tp2, entry_realtime "
+            "FROM predictions_4h WHERE date LIKE ? AND outcome IS NULL AND predicted_direction != 'NO_TRADE'",
+            (f"{this_month}%",)).fetchall()]
+    finally:
+        conn.close()
+
+    def _enrich(pos, is_4h=False):
+        p = dict(pos)
+        entry = p.get("entry_realtime") or p.get("price")
+        p["entry"] = entry
+        p["is_4h"] = is_4h
+        p["near_sl"] = False
+        p["near_tp1"] = False
+        if curr and entry and p.get("sl"):
+            is_buy = "BUY" in (p.get("predicted_direction") or "")
+            if (is_buy and curr <= p["sl"]) or (not is_buy and curr >= p["sl"]):
+                p["near_sl"] = True
+            elif p.get("tp1") and ((is_buy and curr >= p["tp1"]) or (not is_buy and curr <= p["tp1"])):
+                p["near_tp1"] = True
+        return p
+
+    return jsonify({
+        "daily": [_enrich(d) for d in daily],
+        "fourh": [_enrich(f, True) for f in fourh],
+        "current_price": curr["price"] if curr and isinstance(curr, dict) else curr,
+    })
 
 
 @app.route("/api/action", methods=["POST"])
