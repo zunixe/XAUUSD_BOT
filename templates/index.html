@@ -508,7 +508,7 @@ async function refreshModel() {
     const tip = (label, text) => `<span class="tip">${label}<span class="tip-text">${text}</span></span>`;
     html += `
       <div class="mb-3 pb-3" style="border-bottom:1px solid rgba(255,255,255,0.06)">
-        <div class="flex justify-between items-center mb-2"><span class="font-bold uppercase text-sm">${tf}</span><span class="badge badge-purple">${m.version}</span></div>
+        <div class="flex justify-between items-center mb-2"><span class="font-bold uppercase text-sm">${tf}</span><span class="badge badge-purple">${m.version === 'N/A' ? m.train_date?.slice(0,10)?.replace(/-/g,'') || 'N/A' : m.version}</span></div>
         <div class="grid grid-cols-3 gap-2">
           <div class="stat-box"><div class="text-[10px] opacity-50">${tip('Accuracy','Correct predictions / total (test set). Higher = better generalisasi.')}</div><div class="font-bold text-sm">${fmtPct(m.test_acc)}</div></div>
           <div class="stat-box"><div class="text-[10px] opacity-50">${tip('OOT','Out-Of-Time accuracy — diuji pada data terbaru yg TIDAK dipakai training. N/A = model belum di-evaluasi OOT. Makin tinggi makin robust.')}</div><div class="font-bold text-sm">${m.oot_acc ? fmtPct(m.oot_acc) : 'N/A'}</div></div>
