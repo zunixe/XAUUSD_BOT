@@ -186,6 +186,10 @@ tailwind.config = {
         <span>Daily: <b id="daily-wl">...</b></span>
         <span>4H: <b id="fourh-wl">...</b></span>
       </div>
+      <div class="text-[10px] mt-1 flex gap-3 opacity-60">
+        <span>F1 Daily: <b id="daily-f1">...</b></span>
+        <span>F1 4H: <b id="fourh-f1">...</b></span>
+      </div>
     </div>
     <div class="card-dark card-amber p-5">
       <div class="card-header">
@@ -440,6 +444,8 @@ async function refreshOverview() {
   document.getElementById('trade-count').textContent = `${d.total_trades} trades total`;
   document.getElementById('daily-wl').textContent = `${d.daily_wins}W / ${d.daily_losses}L (${fmtPct(d.daily_win_rate)})`;
   document.getElementById('fourh-wl').textContent = `${d.fourh_wins}W / ${d.fourh_losses}L (${fmtPct(d.fourh_win_rate)})`;
+  document.getElementById('daily-f1').textContent = d.daily_f1 != null ? d.daily_f1+'%' : 'N/A';
+  document.getElementById('fourh-f1').textContent = d.fourh_f1 != null ? d.fourh_f1+'%' : 'N/A';
   const mrEl = document.getElementById('monthly-return');
   mrEl.textContent = fmtPct(d.monthly_return);
   mrEl.className = 'text-2xl font-bold ' + (d.monthly_return >= 0 ? 'text-green-400' : 'text-red-400');
@@ -505,8 +511,8 @@ async function refreshModel() {
         <div class="flex justify-between items-center mb-2"><span class="font-bold uppercase text-sm">${tf}</span><span class="badge badge-purple">${m.version}</span></div>
         <div class="grid grid-cols-3 gap-2">
           <div class="stat-box"><div class="text-[10px] opacity-50">${tip('Accuracy','Correct predictions / total (test set). Higher = better generalisasi.')}</div><div class="font-bold text-sm">${fmtPct(m.test_acc)}</div></div>
-          <div class="stat-box"><div class="text-[10px] opacity-50">${tip('OOT','Out-Of-Time accuracy. Diuji pada data terbaru yg tidak dipakai training. Ukuran robustness.')}</div><div class="font-bold text-sm">${m.oot_acc ? fmtPct(m.oot_acc) : 'N/A'}</div></div>
-          <div class="stat-box"><div class="text-[10px] opacity-50">${tip('F1','Harmonic mean precision & recall. Balance antara false positive & false negative.')}</div><div class="font-bold text-sm">${fmtPct(m.f1)}</div></div>
+          <div class="stat-box"><div class="text-[10px] opacity-50">${tip('OOT','Out-Of-Time accuracy — diuji pada data terbaru yg TIDAK dipakai training. N/A = model belum di-evaluasi OOT. Makin tinggi makin robust.')}</div><div class="font-bold text-sm">${m.oot_acc ? fmtPct(m.oot_acc) : 'N/A'}</div></div>
+          <div class="stat-box"><div class="text-[10px] opacity-50">${tip('F1','Harmonic mean precision & recall. 0% = model gagal memprediksi kelas minoritas dengan benar. Idealnya >50%.')}</div><div class="font-bold text-sm">${fmtPct(m.f1)}</div></div>
         </div>
         <div class="text-[10px] opacity-40 mt-2">${tip(m.features+' features','Jumlah input variable yg dipakai model untuk prediksi.')} | ${tip(m.train_samples+' samples','Jumlah baris data yg dipakai saat training.')} | ${tip('Thresh: '+m.threshold,'Confidence threshold. Prediksi di atas ini = BUY/SELL, di bawah = NO_TRADE.')} | ${m.train_date}</div>
       </div>`;

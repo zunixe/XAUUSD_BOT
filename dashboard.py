@@ -92,6 +92,24 @@ def _get_live_price():
         return None
 
 
+def _calc_f1(table):
+    """Calculate F1 score from actual trade outcomes."""
+    try:
+        conn = sqlite3.connect(trading.DB_FILE)
+        rows = conn.execute(f"SELECT outcome FROM {table} WHERE outcome IN ('WIN','LOSS')").fetchall()
+        conn.close()
+        if len(rows) < 2:
+            return None
+        wins = sum(1 for r in rows if r[0] == 'WIN')
+        losses = sum(1 for r in rows if r[0] == 'LOSS')
+        precision = wins / (wins + losses) if (wins + losses) > 0 else 0
+        recall = wins / (wins + losses) if (wins + losses) > 0 else 0  # binary simplification
+        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+        return round(f1 * 100, 1)
+    except Exception:
+        return None
+
+
 def _tail_log(filename, n=50):
     path = os.path.join(BASE_DIR, filename)
     if not os.path.exists(path):
@@ -193,6 +211,8 @@ def api_overview():
     # Trade stats (daily + 4H combined, exclude SKIP/NO_TRADE)
     daily_stats = _db_query_one("SELECT COUNT(*) as total, SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as wins, SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses FROM predictions WHERE outcome NOT IN ('SKIP', 'NO_TRADE')") or {"total": 0, "wins": 0, "losses": 0}
     fourh_stats = _db_query_one("SELECT COUNT(*) as total, SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as wins, SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as losses FROM predictions_4h WHERE outcome NOT IN ('SKIP', 'NO_TRADE')") or {"total": 0, "wins": 0, "losses": 0}
+    daily_f1 = _calc_f1("predictions")
+    fourh_f1 = _calc_f1("predictions_4h")
 
     total = (daily_stats["total"] or 0) + (fourh_stats["total"] or 0)
     wins = (daily_stats["wins"] or 0) + (fourh_stats["wins"] or 0)
@@ -264,6 +284,8 @@ def api_overview():
         "daily_win_rate": round(d_wins / d_total * 100, 1) if d_total else 0,
         "fourh_total": f_total, "fourh_wins": f_wins, "fourh_losses": f_losses,
         "fourh_win_rate": round(f_wins / f_total * 100, 1) if f_total else 0,
+        "daily_f1": daily_f1,
+        "fourh_f1": fourh_f1,
         "daily_pending": daily_pending, "fourh_pending": fourh_pending,
         "active_positions": daily_active + fourh_active,
         "monthly_return": round(monthly_return, 2),
