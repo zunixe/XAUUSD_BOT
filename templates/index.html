@@ -228,20 +228,26 @@ tailwind.config = {
   </div>
 
   <!-- TECHNICAL INDICATORS -->
-  <div class="grid md:grid-cols-2 gap-4 mb-5">
-    <div class="card-dark card-blue p-5">
-      <div class="card-header">
-        <div class="card-icon icon-blue">📈 Daily</div>
-        <div class="text-xs font-semibold uppercase opacity-60">Technical Indicators</div>
-      </div>
-      <div id="indicators-daily" class="text-sm">Loading...</div>
+  <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
+    <div class="card-dark card-blue p-4">
+      <div class="card-icon icon-blue text-xs mb-2">📈</div>
+      <div class="text-[10px] uppercase opacity-50 mb-1">Daily</div>
+      <div id="indicators-daily" class="text-xs">Loading...</div>
     </div>
-    <div class="card-dark card-indigo p-5">
-      <div class="card-header">
-        <div class="card-icon icon-indigo">⏱️ 4H</div>
-        <div class="text-xs font-semibold uppercase opacity-60">Technical Indicators</div>
-      </div>
-      <div id="indicators-4h" class="text-sm">Loading...</div>
+    <div class="card-dark card-indigo p-4">
+      <div class="card-icon icon-indigo text-xs mb-2">⏱️</div>
+      <div class="text-[10px] uppercase opacity-50 mb-1">4H</div>
+      <div id="indicators-4h" class="text-xs">Loading...</div>
+    </div>
+    <div class="card-dark card-purple p-4">
+      <div class="card-icon icon-purple text-xs mb-2">📊</div>
+      <div class="text-[10px] uppercase opacity-50 mb-1">Weekly</div>
+      <div id="indicators-weekly" class="text-xs">Loading...</div>
+    </div>
+    <div class="card-dark card-amber p-4">
+      <div class="card-icon icon-amber text-xs mb-2">📅</div>
+      <div class="text-[10px] uppercase opacity-50 mb-1">Monthly</div>
+      <div id="indicators-monthly" class="text-xs">Loading...</div>
     </div>
   </div>
 
@@ -256,6 +262,27 @@ tailwind.config = {
     </div>
     <div id="active-positions-content" class="text-sm">
       <div class="opacity-40">Loading...</div>
+    </div>
+  </div>
+
+  <!-- NEWS & EVENTS -->
+  <div class="card-dark card-orange p-5 mb-5">
+    <div class="card-header" style="justify-content:space-between">
+      <div class="flex items-center gap-2">
+        <div class="card-icon icon-orange">📰</div>
+        <div class="text-xs font-semibold uppercase opacity-60">Economic Calendar</div>
+      </div>
+      <span id="news-fetched" class="text-[10px] opacity-40"></span>
+    </div>
+    <div class="grid md:grid-cols-2 gap-4">
+      <div>
+        <div class="text-[10px] uppercase opacity-50 mb-2 font-bold text-orange-400">Upcoming</div>
+        <div id="news-upcoming" class="text-xs space-y-1 max-h-64 overflow-y-auto">Loading...</div>
+      </div>
+      <div>
+        <div class="text-[10px] uppercase opacity-50 mb-2 font-bold opacity-40">Past (this week)</div>
+        <div id="news-past" class="text-xs space-y-1 max-h-64 overflow-y-auto">Loading...</div>
+      </div>
     </div>
   </div>
 
@@ -806,19 +833,16 @@ function renderIndicators(data, elId) {
   const trendColor = data.trend > 0 ? 'text-green-400' : data.trend < 0 ? 'text-red-400' : 'text-gray-400';
   const rsiColor = data.rsi > 70 ? 'text-red-400' : data.rsi < 30 ? 'text-green-400' : 'text-yellow-400';
   el.innerHTML = `
-    <div class="grid grid-cols-2 gap-x-3 gap-y-1">
-      <div class="text-[10px] opacity-50">Close</div><div class="font-mono text-xs font-bold">${fmt$(data.close)}</div>
-      <div class="text-[10px] opacity-50">${tip('RSI (14)','Relative Strength Index. >70 = overbought, <30 = oversold.')}</div><div class="font-mono text-xs ${rsiColor}">${data.rsi.toFixed(1)}</div>
-      <div class="text-[10px] opacity-50">ATR (14)</div><div class="font-mono text-xs">${fmt$(data.atr)}</div>
-      <div class="text-[10px] opacity-50">${tip('ADX (14)','Average Directional Index. >25 = trending, <20 = ranging.')}</div><div class="font-mono text-xs">${data.adx.toFixed(1)}</div>
-      <div class="text-[10px] opacity-50">+DI / -DI</div><div class="font-mono text-xs">+${data.plus_di} / -${data.minus_di}</div>
-      <div class="text-[10px] opacity-50">${tip('Trend','Model trend direction. BULL=bullish, BEAR=bearish, FLAT=sideways.')}</div><div class="font-mono text-xs font-bold ${trendColor}">${data.trend_label}</div>
-      <div class="text-[10px] opacity-50">${tip('MACD','Trend-following momentum. Line > Signal = bullish. Histogram = difference.')}</div><div class="font-mono text-xs ${macdColor}">${data.macd.toFixed(1)}</div>
-      <div class="text-[10px] opacity-50">Signal</div><div class="font-mono text-xs">${data.macd_signal.toFixed(1)}</div>
-      <div class="text-[10px] opacity-50">Histogram</div><div class="font-mono text-xs font-bold ${macdColor}">${data.macd_hist >= 0 ? '+' : ''}${data.macd_hist.toFixed(1)}</div>
-      <div class="text-[10px] opacity-50">EMA20 / EMA50</div><div class="font-mono text-xs">${fmt$(data.ema20)} / ${fmt$(data.ema50)}</div>
-      <div class="text-[10px] opacity-50">BB Upper / Lower</div><div class="font-mono text-xs">${fmt$(data.bb_upper)} / ${fmt$(data.bb_lower)}</div>
-      <div class="text-[10px] opacity-50">Swing H / Swing L</div><div class="font-mono text-xs">${fmt$(data.swing_high)} / ${fmt$(data.swing_low)}</div>
+    <div class="space-y-1">
+      <div class="flex justify-between"><span class="text-[10px] opacity-50">Close</span><span class="font-mono text-xs font-bold">${fmt$(data.close)}</span></div>
+      <div class="flex justify-between"><span class="text-[10px] opacity-50">${tip('RSI','Relative Strength Index. >70 = overbought, <30 = oversold.')}</span><span class="font-mono text-xs ${rsiColor}">${data.rsi.toFixed(1)}</span></div>
+      <div class="flex justify-between"><span class="text-[10px] opacity-50">ATR</span><span class="font-mono text-xs">${fmt$(data.atr)}</span></div>
+      <div class="flex justify-between"><span class="text-[10px] opacity-50">${tip('ADX','Average Directional Index. >25 = trending, <20 = ranging.')}</span><span class="font-mono text-xs">${data.adx.toFixed(1)}</span></div>
+      <div class="flex justify-between"><span class="text-[10px] opacity-50">MACD</span><span class="font-mono text-xs ${macdColor}">${data.macd.toFixed(1)}</span></div>
+      <div class="flex justify-between"><span class="text-[10px] opacity-50">Histogram</span><span class="font-mono text-xs font-bold ${macdColor}">${data.macd_hist >= 0 ? '+' : ''}${data.macd_hist.toFixed(1)}</span></div>
+      <div class="flex justify-between"><span class="text-[10px] opacity-50">${tip('Trend','Model trend direction. BULL=bullish, BEAR=bearish, FLAT=sideways.')}</span><span class="font-mono text-xs font-bold ${trendColor}">${data.trend_label}</span></div>
+      <div class="flex justify-between"><span class="text-[10px] opacity-50">BB Upper</span><span class="font-mono text-xs">${fmt$(data.bb_upper)}</span></div>
+      <div class="flex justify-between"><span class="text-[10px] opacity-50">BB Lower</span><span class="font-mono text-xs">${fmt$(data.bb_lower)}</span></div>
     </div>`;
 }
 
@@ -826,6 +850,8 @@ async function refreshIndicators() {
   const d = await fetchJSON('/api/indicators');
   renderIndicators(d.daily, 'indicators-daily');
   renderIndicators(d['4h'], 'indicators-4h');
+  renderIndicators(d.weekly, 'indicators-weekly');
+  renderIndicators(d.monthly, 'indicators-monthly');
 }
 
 async function refreshAll() {

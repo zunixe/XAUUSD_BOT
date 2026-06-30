@@ -330,14 +330,100 @@ def api_signals():
     })
 
 
+@app.route("/api/news")
+def api_news():
+    """Fetch and parse ForexFactory economic calendar via jina.ai summarizer."""
+    from datetime import datetime
+    cache_key = "news"
+    now = datetime.now().timestamp()
+    if cache_key in _cache and now - _cache_ttl.get(cache_key, 0) < 3600:
+        return jsonify(_cache[cache_key])
+
+    events = []
+    try:
+        import re, urllib.request
+        url = "https://r.jina.ai/http://www.forexfactory.com/calendar"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            text = resp.read().decode("utf-8", errors="ignore")
+
+        # Parse markdown table rows
+        impact_map = {"red": "high", "ora": "medium", "yel": "low", "gra": "holiday"}
+        date_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        cur_month = datetime.now().strftime("%b")
+        cur_date_label = None
+
+        for line in text.splitlines():
+            # Detect date headers
+            dm = re.match(r'(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\w+)\s+(\d+)', line)
+            if dm:
+                cur_date_label = f"{dm.group(1)} {dm.group(2)} {dm.group(3)}"
+                continue
+
+            # Detect event rows: time | currency | impact_icon | event | actual | forecast | prev
+            rm = re.findall(r'(?:\|\s*([^|]+?)\s*(?:\|\s*([A-Z]{3})\s*)?(?:\|\s*.*?(?:ff-impact-(\w+)).*?)?\|\s*([^|]+?)\s*(?:\|\s*([^|]*?)\s*)?(?:\|\s*([^|]*?)\s*)?(?:\|\s*([^|]*?)\s*)?\|)', line)
+            if rm:
+                for m in rm:
+                    event_time = m[0].strip()
+                    currency = m[1].strip() if m[1] else ""
+                    impact_key = m[2].strip() if m[2] else ""
+                    event_name = m[3].strip()
+                    actual = m[4].strip() if len(m) > 4 else ""
+                    forecast = m[5].strip() if len(m) > 5 else ""
+                    previous = m[6].strip() if len(m) > 6 else ""
+
+                    # Skip empty rows or header rows
+                    if not event_name or "Currency" in event_name or "Actual" in event_name:
+                        continue
+                    if not currency:
+                        continue
+
+                    impact = impact_map.get(impact_key, "info")
+                    events.append({
+                        "date": cur_date_label or "",
+                        "time": event_time,
+                        "currency": currency,
+                        "impact": impact,
+                        "event": event_name,
+                        "actual": actual,
+                        "forecast": forecast,
+                        "previous": previous,
+                    })
+    except Exception:
+        pass
+
+    # Split into upcoming and past (within 2 days window)
+    now_str = datetime.now().strftime("%a %b %-d")
+    upcoming = []
+    past = []
+    for e in events:
+        if e["date"].startswith(now_str.split()[0]):  # today matches
+            upcoming.append(e)
+        elif e["date"] >= now_str:  # future
+            upcoming.append(e)
+        else:
+            past.append(e)
+
+    result = {
+        "upcoming": upcoming[:30],
+        "past": past[:15],
+        "fetched_at": datetime.now().strftime("%H:%M"),
+    }
+    _cache[cache_key] = result
+    _cache_ttl[cache_key] = now
+    return jsonify(result)
+
+
 @app.route("/api/indicators")
 def api_indicators():
     result = {"daily": {}, "4h": {}}
-    for tf, csv in [("daily", trading.CSV_DAILY), ("4h", trading.CSV_4H)]:
+    for tf, csv, resample in [("daily", trading.CSV_DAILY, None), ("4h", trading.CSV_4H, None), ("weekly", trading.CSV_DAILY, "W-FRI"), ("monthly", trading.CSV_DAILY, "ME")]:
         try:
             df = pd.read_csv(csv, parse_dates=["Date"])
             df.sort_values("Date", inplace=True)
             df.set_index("Date", inplace=True)
+            if resample:
+                df = df.resample(resample).agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"}).dropna()
             levels = trading.calculate_levels(df)
             adx, plus_di, minus_di = trading.compute_adx(df["High"], df["Low"], df["Close"])
             trend = trading.get_daily_trend(df)
