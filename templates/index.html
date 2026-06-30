@@ -178,9 +178,13 @@ tailwind.config = {
         <div><span class="text-2xl font-bold text-green-400" id="wins-count">...</span><span class="text-xs opacity-50 ml-1">W</span></div>
         <div><span class="text-2xl font-bold text-red-400" id="losses-count">...</span><span class="text-xs opacity-50 ml-1">L</span></div>
       </div>
-      <div class="text-xs mt-1 flex gap-2">
-        <span class="opacity-60" id="win-rate">...</span>
+      <div class="text-xs mt-1 flex gap-3">
         <span class="opacity-40" id="trade-count">...</span>
+        <span class="opacity-60" id="win-rate">...</span>
+      </div>
+      <div class="text-[10px] mt-1 flex gap-3">
+        <span>Daily: <b id="daily-wl">...</b></span>
+        <span>4H: <b id="fourh-wl">...</b></span>
       </div>
     </div>
     <div class="card-dark card-amber p-5">
@@ -434,6 +438,8 @@ async function refreshOverview() {
   document.getElementById('losses-count').textContent = d.losses;
   document.getElementById('win-rate').textContent = `WR: ${fmtPct(d.win_rate)}`;
   document.getElementById('trade-count').textContent = `${d.total_trades} trades total`;
+  document.getElementById('daily-wl').textContent = `${d.daily_wins}W / ${d.daily_losses}L (${fmtPct(d.daily_win_rate)})`;
+  document.getElementById('fourh-wl').textContent = `${d.fourh_wins}W / ${d.fourh_losses}L (${fmtPct(d.fourh_win_rate)})`;
   const mrEl = document.getElementById('monthly-return');
   mrEl.textContent = fmtPct(d.monthly_return);
   mrEl.className = 'text-2xl font-bold ' + (d.monthly_return >= 0 ? 'text-green-400' : 'text-red-400');

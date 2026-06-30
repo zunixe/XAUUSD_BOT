@@ -249,10 +249,21 @@ def api_overview():
     pnl = round(effective_balance - initial, 2) if sim else 0
     ret_pct = round(pnl / initial * 100, 2) if initial else 0
 
+    d_total = daily_stats["total"] or 0
+    d_wins = daily_stats["wins"] or 0
+    d_losses = daily_stats["losses"] or 0
+    f_total = fourh_stats["total"] or 0
+    f_wins = fourh_stats["wins"] or 0
+    f_losses = fourh_stats["losses"] or 0
+
     return jsonify({
         "balance": balance, "initial": initial, "pnl": pnl, "return_pct": ret_pct,
         "total_trades": total, "wins": wins, "losses": losses,
         "win_rate": round(wins / total * 100, 1) if total else 0,
+        "daily_total": d_total, "daily_wins": d_wins, "daily_losses": d_losses,
+        "daily_win_rate": round(d_wins / d_total * 100, 1) if d_total else 0,
+        "fourh_total": f_total, "fourh_wins": f_wins, "fourh_losses": f_losses,
+        "fourh_win_rate": round(f_wins / f_total * 100, 1) if f_total else 0,
         "daily_pending": daily_pending, "fourh_pending": fourh_pending,
         "active_positions": daily_active + fourh_active,
         "monthly_return": round(monthly_return, 2),
