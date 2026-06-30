@@ -512,7 +512,7 @@ async function refreshModel() {
         <div class="grid grid-cols-3 gap-2">
           <div class="stat-box"><div class="text-[10px] opacity-50">${tip('Accuracy','Correct predictions / total (test set). Higher = better generalisasi.')}</div><div class="font-bold text-sm">${fmtPct(m.test_acc)}</div></div>
           <div class="stat-box"><div class="text-[10px] opacity-50">${tip('OOT','Out-Of-Time accuracy — diuji pada data terbaru yg TIDAK dipakai training. N/A = model belum di-evaluasi OOT. Makin tinggi makin robust.')}</div><div class="font-bold text-sm">${m.oot_acc ? fmtPct(m.oot_acc) : 'N/A'}</div></div>
-          <div class="stat-box"><div class="text-[10px] opacity-50">${tip('F1','Harmonic mean precision & recall. 0% = model gagal memprediksi kelas minoritas dengan benar. Idealnya >50%.')}</div><div class="font-bold text-sm">${fmtPct(m.f1)}</div></div>
+          <div class="stat-box"><div class="text-[10px] opacity-50">${tip('F1 (real)','F1 dari actual trade outcomes di database. 0% = belum pernah menang. Idealnya >50%.')}</div><div class="font-bold text-sm">${fmtPct(m.f1)}</div></div>
         </div>
         <div class="text-[10px] opacity-40 mt-2">${tip(m.features+' features','Jumlah input variable yg dipakai model untuk prediksi.')} | ${tip(m.train_samples+' samples','Jumlah baris data yg dipakai saat training.')} | ${tip('Thresh: '+m.threshold,'Confidence threshold. Prediksi di atas ini = BUY/SELL, di bawah = NO_TRADE.')} | ${m.train_date}</div>
       </div>`;

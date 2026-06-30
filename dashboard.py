@@ -392,12 +392,15 @@ def api_model():
     for tf, path in [("daily", "xauusd_model.pkl"), ("4h", "xauusd_model_4h.pkl")]:
         arts = _load_model(tf)
         if arts:
+            table = "predictions" if tf == "daily" else "predictions_4h"
+            db_f1 = _calc_f1(table)
             result[tf] = {
                 "version": arts.get("model_version", "N/A"),
                 "train_date": arts.get("train_date", "N/A"),
                 "test_acc": round(arts.get("test_acc", 0) * 100, 1),
                 "oot_acc": round(arts.get("oot_acc", 0) * 100, 1) if arts.get("oot_acc") else None,
-                "f1": round(arts.get("f1", 0) * 100, 1),
+                "f1": db_f1 if db_f1 is not None else 0,
+                "f1_from_db": db_f1 is not None,
                 "threshold": arts.get("best_thresh", arts.get("threshold", 0.55)),
                 "features": len(arts.get("feature_cols", arts.get("cols", []))),
                 "train_samples": arts.get("train_samples", arts.get("samples", 0)),
