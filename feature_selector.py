@@ -8,14 +8,25 @@ def select_features(model, X, feature_names, min_importance=0.005):
         import shap
         explainer = shap.TreeExplainer(model)
         shap_values = explainer.shap_values(X)
-        if isinstance(shap_values, list):
-            mean_shap = np.mean([np.abs(sv).mean(axis=0) for sv in shap_values], axis=0)
+        sv = np.array(shap_values)
+        # Handle shapes: (n_samples, n_features), (n_classes, n_samples, n_features), (n_samples, n_features, n_classes)
+        if sv.ndim == 3:
+            if sv.shape[0] <= 10 and sv.shape[1] == len(X):
+                # (n_classes, n_samples, n_features) - legacy shap list format
+                mean_shap = np.abs(sv).mean(axis=(0, 1))
+            else:
+                # (n_samples, n_features, n_classes)
+                mean_shap = np.abs(sv).mean(axis=(0, 2))
         else:
-            mean_shap = np.abs(shap_values).mean(axis=0)
-        importance = dict(zip(feature_names, mean_shap))
+            mean_shap = np.abs(sv).mean(axis=0)
+        mean_shap = np.asarray(mean_shap).flatten()
+        if len(mean_shap) != len(feature_names):
+            print(f"[SHAP] Shape mismatch ({len(mean_shap)} vs {len(feature_names)}), keeping all")
+            return feature_names, {}
+        importance = dict(zip(feature_names, mean_shap.tolist()))
         selected = [f for f, imp in importance.items() if imp >= min_importance]
-        removed = [f for f, imp in importance.items() if imp < min_importance]
-        print(f"[SHAP] Selected {len(selected)}/{len(feature_names)} features (removed {len(removed)})")
+        removed = len(feature_names) - len(selected)
+        print(f"[SHAP] Selected {len(selected)}/{len(feature_names)} features (removed {removed})")
         return selected, importance
     except Exception as e:
         print(f"[SHAP] Error: {e}, keeping all features")
