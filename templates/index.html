@@ -284,6 +284,7 @@ tailwind.config = {
         <div id="news-past" class="text-xs space-y-1 max-h-64 overflow-y-auto">Loading...</div>
       </div>
     </div>
+    <div class="text-[10px] opacity-30 mt-2">Source: ForexFactory (WIB / UTC+7) | USD = highest XAUUSD impact | Red=High, Orange=Med, Blue=Low</div>
   </div>
 
   <!-- XAUUSD PRICE CHART -->
@@ -854,19 +855,33 @@ async function refreshIndicators() {
   renderIndicators(d.monthly, 'indicators-monthly');
 }
 
-async function refreshNews() {
+  async function refreshNews() {
   const d = await fetchJSON('/api/news');
   if (!d) return;
   document.getElementById('news-fetched').textContent = 'Updated ' + (d.fetched_at || '');
   const impactColors = { high: 'text-red-400', medium: 'text-yellow-400', low: 'text-blue-400', holiday: 'text-purple-400' };
   const impactBg = { high: 'bg-red-500/10', medium: 'bg-yellow-500/10', low: 'bg-blue-500/10', holiday: 'bg-purple-500/10' };
+  function toWib(timeStr) {
+    if (!timeStr || timeStr === 'All Day') return timeStr;
+    const m = timeStr.match(/(\d+):(\d+)(am|pm)/i);
+    if (!m) return timeStr;
+    let h = parseInt(m[1]), min = parseInt(m[2]), ap = m[3].toLowerCase();
+    if (ap === 'pm' && h !== 12) h += 12;
+    if (ap === 'am' && h === 12) h = 0;
+    const offset = 11; // ET(UTC-4 DST) -> WIB(UTC+7) = +11h
+    h = (h + offset) % 24;
+    const ap2 = h >= 12 ? 'pm' : 'am';
+    const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    return `${h12}:${String(min).padStart(2,'0')}${ap2}`;
+  }
   function render(list) {
     if (!list.length) return '<div class="opacity-40 text-xs">No events</div>';
     return list.map(e => {
       const ic = impactColors[e.impact] || 'text-gray-400';
       const ib = impactBg[e.impact] || '';
-      return `<div class="flex gap-2 py-1 ${ib}" style="border-radius:4px;padding:4px 6px">
-        <span class="opacity-40 font-mono text-[10px] w-14 shrink-0">${e.time}</span>
+      const usd = e.currency === 'USD' ? 'ring-1 ring-yellow-500/30 ' : '';
+      return `<div class="flex gap-2 py-1 ${ib} ${usd}" style="border-radius:4px;padding:4px 6px">
+        <span class="opacity-40 font-mono text-[10px] w-14 shrink-0">${toWib(e.time)} WIB</span>
         <span class="font-bold text-[10px] ${ic} w-8 shrink-0">${e.currency}</span>
         <span class="text-xs flex-1">${e.event}</span>
       </div>`;
