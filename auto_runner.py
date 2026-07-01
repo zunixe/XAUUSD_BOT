@@ -335,8 +335,12 @@ def retrain_model():
             weights_file=LSTM_WEIGHT_FILE
         )
         if lstm_oot_probs is not None and len(lstm_oot_probs) > 0:
-            from lstm_trainer import make_sequences
-            _, y_oot_seq = make_sequences(X_oot, y_oot)
+            from lstm_trainer import make_sequences, SEQ_LEN
+            oot_start = oot_idx[0]
+            ctx_start = max(0, oot_start - SEQ_LEN)
+            X_oot_ctx = scaler.transform(X[ctx_start:oot_start + len(oot_idx)])
+            y_oot_ctx = y[ctx_start:oot_start + len(oot_idx)]
+            _, y_oot_seq = make_sequences(X_oot_ctx, y_oot_ctx)
             lstm_pred = np.argmax(lstm_oot_probs, axis=1)
             n_min = min(len(lstm_pred), len(y_oot_seq))
             lstm_oot_acc = float(accuracy_score(y_oot_seq[:n_min], lstm_pred[:n_min]))

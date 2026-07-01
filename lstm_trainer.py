@@ -87,8 +87,7 @@ def train_lstm_full(X_scaled, y, folds, oot_idx, n_classes=3, weights_file=None)
     from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 
     fold_accs = []
-    best_model = None
-    best_acc = 0.0
+    last_model = None  # last fold = most training data
 
     for fold_i, (train_idx, val_idx) in enumerate(folds):
         X_tr, y_tr = X_scaled[train_idx], y[train_idx]
@@ -102,35 +101,46 @@ def train_lstm_full(X_scaled, y, folds, oot_idx, n_classes=3, weights_file=None)
         preds = np.argmax(model.predict(X_val_seq, verbose=0), axis=1)
         acc = float(np.mean(preds == y_val_seq))
         fold_accs.append(acc)
+        last_model = model  # overwrite each fold — last fold uses most data
 
-        if acc > best_acc:
-            best_acc = acc
-            best_model = model
-
-    if best_model is None:
+    if last_model is None:
         return None, None
+    best_model = last_model
 
-    # OOT evaluation
-    X_oot, y_oot = X_scaled[oot_idx], y[oot_idx]
-    X_oot_seq, y_oot_seq = make_sequences(X_oot, y_oot)
+    # OOT evaluation — prepend SEQ_LEN context rows from end of training data
+    oot_start = oot_idx[0] if len(oot_idx) > 0 else len(X_scaled)
+    ctx_start = max(0, oot_start - SEQ_LEN)
+    X_oot_ctx = X_scaled[ctx_start:oot_start + len(oot_idx)]
+    y_oot_ctx = y[ctx_start:oot_start + len(oot_idx)]
+    X_oot_seq, y_oot_seq = make_sequences(X_oot_ctx, y_oot_ctx)
     lstm_oot_probs = None
     if len(X_oot_seq) >= 5:
         lstm_oot_probs = best_model.predict(X_oot_seq, verbose=0)
 
-    # Save weights
+    # Save weights + metadata (n_features for dimension check on load)
     if weights_file and best_model is not None:
         best_model.save_weights(weights_file)
+        meta_file = weights_file.replace(".h5", ".meta.npy")
+        np.save(meta_file, {"n_features": X_scaled.shape[1], "n_classes": n_classes, "seq_len": SEQ_LEN})
 
     avg_acc = float(np.mean(fold_accs)) if fold_accs else 0.0
+    best_acc = float(np.max(fold_accs)) if fold_accs else 0.0
     print(f"[LSTM] Walk-forward avg acc: {avg_acc:.1%} (best fold: {best_acc:.1%})")
     return lstm_oot_probs, best_model
 
 
 def load_lstm_model(n_features, n_classes=3, weights_file=None):
-    """Load LSTM model from saved weights. Returns None if file doesn't exist."""
+    """Load LSTM model from saved weights. Returns None if file doesn't exist or dimensions mismatch."""
     if not weights_file or not os.path.exists(weights_file):
         return None
     try:
+        meta_file = weights_file.replace(".h5", ".meta.npy")
+        if os.path.exists(meta_file):
+            meta = np.load(meta_file, allow_pickle=True).item()
+            saved_n = meta.get("n_features")
+            if saved_n and saved_n != n_features:
+                print(f"[LSTM] Feature mismatch: saved={saved_n}, current={n_features}, skipping")
+                return None
         model = build_lstm_model(n_features, n_classes)
         model.load_weights(weights_file)
         return model
