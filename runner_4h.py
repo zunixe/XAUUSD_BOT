@@ -226,11 +226,34 @@ def retrain():
         oot_acc = float(accuracy_score(y_oot, y_pred_oot))
         log(f"  OOT holdout ({len(oot_idx)} samples): acc={oot_acc:.1%}")
 
+    # LSTM training for 4H
+    lstm_oot_acc = None
+    try:
+        from lstm_trainer import train_lstm_full, LSTM_4H_WEIGHT_FILE
+        log("[LSTM] Training 4H Bidirectional LSTM...")
+        X_all_scaled = scaler.transform(X)
+        lstm_oot_probs, _ = train_lstm_full(
+            X_all_scaled, y, folds, oot_idx, n_classes=n_classes,
+            weights_file=LSTM_4H_WEIGHT_FILE
+        )
+        if lstm_oot_probs is not None and len(lstm_oot_probs) > 0:
+            from lstm_trainer import make_sequences
+            X_oot_s = scaler.transform(X[oot_idx])
+            _, y_oot_seq = make_sequences(X_oot_s, y[oot_idx])
+            lstm_pred = np.argmax(lstm_oot_probs, axis=1)
+            from sklearn.metrics import accuracy_score
+            n_min = min(len(lstm_pred), len(y_oot_seq))
+            lstm_oot_acc = float(accuracy_score(y_oot_seq[:n_min], lstm_pred[:n_min]))
+            log(f"[LSTM] 4H OOT acc: {lstm_oot_acc:.1%}")
+    except Exception as e:
+        log(f"[LSTM] 4H training skipped: {e}")
+
     import joblib, tempfile
     _data = {"ensemble_models": ensemble_models, "scaler": scaler, "cols": cols,
               "threshold": best_thresh, "forward": FORWARD_BARS, "n_classes": n_classes,
               "train_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-              "samples": len(X), "test_acc": float(avg_acc), "oot_acc": oot_acc}
+              "samples": len(X), "test_acc": float(avg_acc), "oot_acc": oot_acc,
+              "lstm_oot_acc": lstm_oot_acc, "hybrid": lstm_oot_acc is not None}
     _tmp = tempfile.NamedTemporaryFile(delete=False, dir=trading.BASE_DIR, suffix=".pkl")
     try:
         joblib.dump(_data, _tmp.name)
@@ -281,6 +304,20 @@ def predict():
         probs = np.zeros(n_classes)
         for m, w in ensemble_models:
             probs += w * m.predict_proba(features_scaled)[0]
+
+        # LSTM hybrid blending for 4H
+        try:
+            from lstm_trainer import load_lstm_model, predict_lstm, blend_probs, LSTM_4H_WEIGHT_FILE
+            lstm_model = load_lstm_model(len(cols), n_classes, LSTM_4H_WEIGHT_FILE)
+            X_all = df_feat[cols].fillna(0).values
+            X_all_scaled = scaler.transform(X_all)
+            lstm_probs = predict_lstm(lstm_model, X_all_scaled, n_classes)
+            if lstm_probs is not None:
+                probs = blend_probs(probs, lstm_probs, xgb_weight=0.6, lstm_weight=0.4)
+                log(f"[HYBRID] LSTM blended. lstm_bull={lstm_probs[2]:.1%} lstm_bear={lstm_probs[0]:.1%}")
+        except Exception as e:
+            log(f"[HYBRID] 4H LSTM blend skipped: {e}")
+
         prob_bearish, prob_neutral, prob_bullish = probs
         if prob_bullish >= min_thresh:
             direction = "BUY"

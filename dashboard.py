@@ -542,6 +542,8 @@ def api_model():
                 "n_classes": arts.get("n_classes", 3),
                 "fold_scores": arts.get("fold_scores", []),
                 "forward_days": arts.get("forward_days", arts.get("forward", 3)),
+                "lstm_oot_acc": round(arts.get("lstm_oot_acc", 0) * 100, 1) if arts.get("lstm_oot_acc") else None,
+                "hybrid": arts.get("hybrid", False),
             }
         else:
             result[tf] = None

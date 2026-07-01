@@ -324,6 +324,26 @@ def retrain_model():
         log(f"    BULLISH precision: {oot_report['BULLISH']['precision']:.1%} recall: {oot_report['BULLISH']['recall']:.1%}")
         log(f"    BEARISH precision: {oot_report['BEARISH']['precision']:.1%} recall: {oot_report['BEARISH']['recall']:.1%}")
 
+    # LSTM training (hybrid)
+    lstm_oot_acc = None
+    try:
+        from lstm_trainer import train_lstm_full, LSTM_WEIGHT_FILE
+        log("[LSTM] Training Bidirectional LSTM...")
+        X_all_scaled = scaler.transform(X)
+        lstm_oot_probs, lstm_model = train_lstm_full(
+            X_all_scaled, y, folds, oot_idx, n_classes=n_classes,
+            weights_file=LSTM_WEIGHT_FILE
+        )
+        if lstm_oot_probs is not None and len(lstm_oot_probs) > 0:
+            from lstm_trainer import make_sequences
+            _, y_oot_seq = make_sequences(X_oot, y_oot)
+            lstm_pred = np.argmax(lstm_oot_probs, axis=1)
+            n_min = min(len(lstm_pred), len(y_oot_seq))
+            lstm_oot_acc = float(accuracy_score(y_oot_seq[:n_min], lstm_pred[:n_min]))
+            log(f"[LSTM] OOT acc: {lstm_oot_acc:.1%}")
+    except Exception as e:
+        log(f"[LSTM] Training skipped: {e}")
+
     # Model versioning
     import joblib, tempfile
     version = datetime.now().strftime("%Y%m%d_%H%M")
@@ -333,7 +353,8 @@ def retrain_model():
               "best_thresh": float(best_thresh), "forward_days": forward_days,
               "train_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
               "train_samples": len(X), "test_acc": float(avg_acc), "f1": float(avg_f1),
-              "oot_acc": oot_acc, "fold_scores": scores, "model_version": version}
+              "oot_acc": oot_acc, "fold_scores": scores, "model_version": version,
+              "lstm_oot_acc": lstm_oot_acc, "hybrid": lstm_oot_acc is not None}
     _tmp = tempfile.NamedTemporaryFile(delete=False, dir=trading.BASE_DIR, suffix=".pkl")
     try:
         joblib.dump(_data, _tmp.name)
@@ -400,6 +421,20 @@ def run_prediction_job():
         probs = np.zeros(n_classes)
         for m, w in ensemble_models:
             probs += w * m.predict_proba(features_scaled)[0]
+
+        # LSTM hybrid blending
+        try:
+            from lstm_trainer import load_lstm_model, predict_lstm, blend_probs, LSTM_WEIGHT_FILE
+            lstm_model = load_lstm_model(len(feature_cols), n_classes, LSTM_WEIGHT_FILE)
+            X_all = df[feature_cols].fillna(0).values
+            X_all_scaled = scaler.transform(X_all)
+            lstm_probs = predict_lstm(lstm_model, X_all_scaled, n_classes)
+            if lstm_probs is not None:
+                probs = blend_probs(probs, lstm_probs, xgb_weight=0.6, lstm_weight=0.4)
+                log(f"[HYBRID] LSTM blended. lstm_bull={lstm_probs[2]:.1%} lstm_bear={lstm_probs[0]:.1%}")
+        except Exception as e:
+            log(f"[HYBRID] LSTM blend skipped: {e}")
+
         prob_bearish, prob_neutral, prob_bullish = probs
         min_thresh = min(trading.CFG.get("model", {}).get("min_threshold", 0.55), best_thresh)
         if prob_bullish >= min_thresh:
