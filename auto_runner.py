@@ -441,22 +441,26 @@ def run_prediction_job():
 
         prob_bearish, prob_neutral, prob_bullish = probs
         min_thresh = min(trading.CFG.get("model", {}).get("min_threshold", 0.55), best_thresh)
-        if prob_bullish >= min_thresh:
+        buy_thresh = min_thresh + 0.05  # BUY needs higher confidence (bull bias)
+        sell_thresh = min_thresh - 0.10  # SELL needs lower confidence (bear is rare)
+        if prob_bullish >= buy_thresh:
             direction = "BUY (Bullish)"
             confidence = prob_bullish
-        elif prob_bearish >= min_thresh:
+        elif prob_bearish >= sell_thresh:
             direction = "SELL (Bearish)"
             confidence = prob_bearish
         else:
             direction = "NO_TRADE"
             confidence = max(prob_bullish, prob_bearish)
         log(f"3-class: bear={prob_bearish:.1%} neutral={prob_neutral:.1%} bull={prob_bullish:.1%}")
+        log(f"Thresholds: buy={buy_thresh:.3f} sell={sell_thresh:.3f} (min_thresh={min_thresh:.3f})")
     else:
         # Legacy binary model fallback
         prob = float(sum(w * m.predict_proba(features_scaled)[0, 1] for m, w in ensemble_models))
         min_thresh = min(trading.CFG.get("model", {}).get("min_threshold", 0.55), best_thresh)
-        sell_thresh = 1.0 - min_thresh
-        direction = "BUY (Bullish)" if prob >= min_thresh else "SELL (Bearish)" if prob <= sell_thresh else "NO_TRADE"
+        buy_thresh = min_thresh + 0.05
+        sell_thresh = 1.0 - min_thresh - 0.10
+        direction = "BUY (Bullish)" if prob >= buy_thresh else "SELL (Bearish)" if prob <= sell_thresh else "NO_TRADE"
         confidence = prob
         prob_bullish = prob
         prob_bearish = 1.0 - prob

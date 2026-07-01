@@ -322,10 +322,12 @@ def predict():
             log(f"[HYBRID] 4H LSTM blend skipped: {e}")
 
         prob_bearish, prob_neutral, prob_bullish = probs
-        if prob_bullish >= min_thresh:
+        buy_thresh = min_thresh + 0.05  # BUY needs higher confidence (bull bias)
+        sell_thresh = min_thresh - 0.10  # SELL needs lower confidence (bear is rare)
+        if prob_bullish >= buy_thresh:
             direction = "BUY"
             confidence = prob_bullish
-        elif prob_bearish >= min_thresh:
+        elif prob_bearish >= sell_thresh:
             direction = "SELL"
             confidence = prob_bearish
         else:
@@ -335,10 +337,10 @@ def predict():
     else:
         prob = float(sum(w * m.predict_proba(features_scaled)[0, 1] for m, w in ensemble_models))
         sell_thresh = 1.0 - min_thresh
-        direction = "BUY" if prob >= min_thresh else "SELL" if prob <= sell_thresh else "NO_TRADE"
+        direction = "BUY" if prob >= min_thresh + 0.05 else "SELL" if prob <= sell_thresh - 0.10 else "NO_TRADE"
         confidence = prob
 
-    log(f"4H Close: ${latest_price:.2f} | Realtime: ${entry:.2f}{change_str} | {direction} | conf: {confidence:.1%} | thresh: {min_thresh:.3f}")
+    log(f"4H Close: ${latest_price:.2f} | Realtime: ${entry:.2f}{change_str} | {direction} | conf: {confidence:.1%} | thresh: {min_thresh:.3f} | buy={min_thresh+0.05:.3f} sell={min_thresh-0.10:.3f}")
 
     # Levels & TP/SL (aligned with compute_tp_sl multipliers)
     tr = pd.concat([
